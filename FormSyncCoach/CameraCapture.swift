@@ -26,6 +26,19 @@ final class CameraCapture: NSObject, ObservableObject {
     private let queue = DispatchQueue(label: "camera.capture", qos: .userInitiated)
     private var startTime: CMTime?
     private var frameCount = 0
+    private var device: AVCaptureDevice?
+
+    /// 収録中に試す順番。240fps非対応機種（前面カメラなど）では
+    /// 対応している最大値まで自動的に下がる。
+    private let highSpeedFPSCandidates: [Double] = [240, 120, 60]
+    private let previewFPS: Double = 30
+
+    // MARK: - 実時間での動画書き出し
+
+    private var isCapturingToFile = false
+    private var pendingRecordingURL: URL?
+    private var assetWriter: AVAssetWriter?
+    private var assetWriterInput: AVAssetWriterInput?
 
     // MARK: - 権限
 
@@ -55,6 +68,7 @@ final class CameraCapture: NSObject, ObservableObject {
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else { throw CaptureError.cannotAddInput }
         session.addInput(input)
+        self.device = device
 
         // MediaPipe の MPImage(sampleBuffer:) はこのフォーマットを前提にしている。
         output.videoSettings = [
@@ -70,7 +84,7 @@ final class CameraCapture: NSObject, ObservableObject {
             applyOrientation(to: connection)
         }
 
-        try? applyFormat(fps: targetFPS, width: targetWidth, to: device)
+        _ = try? applyFormat(fps: targetFPS, width: targetWidth, to: device)
     }
 
     // MARK: - カメラ切り替え
@@ -95,13 +109,14 @@ final class CameraCapture: NSObject, ObservableObject {
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else { throw CaptureError.cannotAddInput }
         session.addInput(input)
+        self.device = device
 
         // 入力を差し替えると接続も作り直されるので、設定を再適用する。
         if let connection = output.connection(with: .video) {
             applyOrientation(to: connection)
         }
 
-        try? applyFormat(fps: targetFPS, width: targetWidth, to: device)
+        _ = try? applyFormat(fps: targetFPS, width: targetWidth, to: device)
 
         // startTime は意図的にリセットしない。
         // MediaPipe の liveStream モードはタイムスタンプの単調増加を要求するため、
@@ -125,7 +140,8 @@ final class CameraCapture: NSObject, ObservableObject {
     /// 目標を満たす中で「最小の」解像度を選ぶ。
     /// MediaPipe は内部で 256px 程度に縮小するため、これ以上大きくしても
     /// 精度は上がらず発熱だけ増える。
-    private func applyFormat(fps: Double, width: Int32, to device: AVCaptureDevice) throws {
+    @discardableResult
+    private func applyFormat(fps: Double, width: Int32, to device: AVCaptureDevice) throws -> Bool {
         let candidates = device.formats.filter { format in
             let dim = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             return dim.width >= width
@@ -135,7 +151,7 @@ final class CameraCapture: NSObject, ObservableObject {
         guard let best = candidates.min(by: {
             CMVideoFormatDescriptionGetDimensions($0.formatDescription).width
                 < CMVideoFormatDescriptionGetDimensions($1.formatDescription).width
-        }) else { return }
+        }) else { return false }
 
         let dim = CMVideoFormatDescriptionGetDimensions(best.formatDescription)
         print("選択したフォーマット: \(dim.width)x\(dim.height) @ \(fps)fps / \(position == .front ? "前面" : "背面")")
@@ -146,6 +162,33 @@ final class CameraCapture: NSObject, ObservableObject {
         device.activeVideoMinFrameDuration = duration
         device.activeVideoMaxFrameDuration = duration
         device.unlockForConfiguration()
+        return true
+    }
+
+    // MARK: - 収録中だけ高フレームレートにする
+
+    /// 収録の直前に呼ぶ。240fps → 120fps → 60fps の順に、機種が対応している
+    /// 最大値を選ぶ。写真ライブラリ経由のスロー動画は再生時間が水増しされて
+    /// 実時間の計測ができないため、自前でこの高フレームレートのまま
+    /// `startFileRecording()` で書き出す。
+    func beginHighSpeedCapture(width: Int32 = 1280) {
+        guard let device else { return }
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+
+        for fps in highSpeedFPSCandidates {
+            if let applied = try? applyFormat(fps: fps, width: width, to: device), applied {
+                return
+            }
+        }
+    }
+
+    /// 収録が終わったらプレビュー用の通常フレームレートへ戻す。
+    func endHighSpeedCapture(width: Int32 = 1280) {
+        guard let device else { return }
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        _ = try? applyFormat(fps: previewFPS, width: width, to: device)
     }
 
     // MARK: - 開始 / 停止
@@ -158,6 +201,69 @@ final class CameraCapture: NSObject, ObservableObject {
     func stop() {
         guard session.isRunning else { return }
         queue.async { [weak self] in self?.session.stopRunning() }
+    }
+
+    // MARK: - 実時間での動画書き出し（240fps収録用）
+
+    /// 実際のカメラ映像を実時間のまま一時ファイル(.mov)に書き出す準備をする。
+    /// 書き出し自体は最初のフレームが来た時点（`appendToFileRecording`）で
+    /// 実サイズが分かってから始める。
+    func startFileRecording() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("capture_\(UUID().uuidString).mov")
+        pendingRecordingURL = url
+        assetWriter = nil
+        assetWriterInput = nil
+        isCapturingToFile = true
+        return url
+    }
+
+    /// 書き出しを終える。呼び出し元は返ってきた URL を
+    /// `VideoPoseAnalyzer` にそのまま渡せば、実時間のまま解析できる。
+    func stopFileRecording() async -> URL? {
+        isCapturingToFile = false
+        guard let writer = assetWriter, let input = assetWriterInput else {
+            assetWriter = nil
+            assetWriterInput = nil
+            pendingRecordingURL = nil
+            return nil
+        }
+        input.markAsFinished()
+        await writer.finishWriting()
+        assetWriter = nil
+        assetWriterInput = nil
+        let url = pendingRecordingURL
+        pendingRecordingURL = nil
+        return writer.status == .completed ? url : nil
+    }
+
+    /// `queue`（カメラのシリアルキュー）上で呼ばれる想定。
+    /// 最初の1フレームが来た時点で、実際のピクセルサイズに合わせて
+    /// AVAssetWriter を組み立てる（回転後のサイズは事前に分からないため）。
+    private func appendToFileRecording(_ sampleBuffer: CMSampleBuffer) {
+        if assetWriter == nil {
+            guard let url = pendingRecordingURL,
+                  let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+                  let writer = try? AVAssetWriter(outputURL: url, fileType: .mov)
+            else { return }
+
+            let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: CVPixelBufferGetWidth(pixelBuffer),
+                AVVideoHeightKey: CVPixelBufferGetHeight(pixelBuffer),
+            ])
+            input.expectsMediaDataInRealTime = true
+            guard writer.canAdd(input) else { return }
+            writer.add(input)
+
+            writer.startWriting()
+            writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+            assetWriter = writer
+            assetWriterInput = input
+        }
+
+        guard let input = assetWriterInput, input.isReadyForMoreMediaData else { return }
+        input.append(sampleBuffer)
     }
 
     // MARK: -
@@ -185,6 +291,8 @@ extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        if isCapturingToFile { appendToFileRecording(sampleBuffer) }
+
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if startTime == nil { startTime = pts }
         guard let start = startTime else { return }

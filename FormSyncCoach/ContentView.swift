@@ -38,6 +38,11 @@ struct ContentView: View {
                 CountdownNumber(seconds: seconds)
             }
 
+            // 収録した高フレームレート動画を解析している間の表示。
+            if model.isAnalyzingRecording {
+                AnalyzingOverlay()
+            }
+
             VStack {
                 topBar
                 Spacer()
@@ -260,6 +265,27 @@ private struct RecordingBadge: View {
         .padding(.vertical, 10)
         .background(.red, in: Capsule())
         .accessibilityLabel("収録中。残り \(secondsLeft ?? 0) 秒")
+    }
+}
+
+// MARK: - 収録動画の解析中
+
+private struct AnalyzingOverlay: View {
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.35).ignoresSafeArea()
+            VStack(spacing: 14) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("高フレームレート映像を解析しています…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(28)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }
+        .transition(.opacity)
+        .allowsHitTesting(false)
     }
 }
 

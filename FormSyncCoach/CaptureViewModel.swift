@@ -19,6 +19,8 @@ final class CaptureViewModel: ObservableObject {
     @Published var recordingRemainingMs: Int?
     /// 書き出し処理中。
     @Published var isExporting = false
+    /// 収録した高フレームレート動画を解析中。
+    @Published var isAnalyzingRecording = false
 
     /// PRD の 5 秒制限。ここを超えたら自動で収録を終える。
     let maxDurationMs = 5_000
@@ -28,9 +30,10 @@ final class CaptureViewModel: ObservableObject {
 
     let camera = CameraCapture()
     private var estimator: PoseEstimating?
-    private var buffer: [PoseFrame] = []
     private var recordingStartMs: Int?
     private var stillSinceMs: Int?
+    /// 収録中に240fpsのまま実時間で書き出している一時ファイル。
+    private var recordingFileURL: URL?
 
     // 静止判定用。腰の中点の動きを短い窓で見る。
     private var hipHistory: [(ms: Int, x: Float, y: Float)] = []
@@ -90,13 +93,18 @@ final class CaptureViewModel: ObservableObject {
     }
 
     private func beginRecording() {
-        buffer.removeAll()
         recordingStartMs = nil
         recordedSequence = nil
         exportURL = nil
         recordingRemainingMs = maxDurationMs
         resetAutoStart()
         isRecording = true
+
+        // 写真ライブラリ経由のスロー動画は再生時間が水増しされ実時間の計測が
+        // できないため、収録中だけ240fps（非対応機種は自動的に下がる）に切り替え、
+        // 実時間のまま自前で書き出す。
+        camera.beginHighSpeedCapture()
+        recordingFileURL = camera.startFileRecording()
     }
 
     private func receive(_ frame: PoseFrame) {
@@ -110,8 +118,6 @@ final class CaptureViewModel: ObservableObject {
         }
 
         if recordingStartMs == nil { recordingStartMs = frame.timestampMs }
-        buffer.append(frame)
-
         guard let start = recordingStartMs else { return }
         let elapsed = frame.timestampMs - start
         recordingRemainingMs = max(0, maxDurationMs - elapsed)
@@ -124,19 +130,43 @@ final class CaptureViewModel: ObservableObject {
     private func finishRecording() {
         isRecording = false
         recordingRemainingMs = nil
-        guard let engine = estimator?.engineID, !buffer.isEmpty else { return }
+        camera.endHighSpeedCapture()
 
-        // 前面カメラは鏡像なので、保存時に座標を反転して背面カメラと同じ座標系へ揃える。
-        // これをしないと、前面で撮った骨格と背面で撮った骨格が左右逆向きになり比較できない。
-        let frames = camera.isMirrored ? buffer.map { $0.flippingHorizontally() } : buffer
-        recordedSequence = PoseSequence(frames: frames, engine: engine)
+        guard recordingFileURL != nil else { return }
+        recordingFileURL = nil
+
+        Task {
+            guard let savedURL = await camera.stopFileRecording() else {
+                errorMessage = "収録データの保存に失敗しました。"
+                return
+            }
+            await analyzeRecording(at: savedURL)
+        }
+    }
+
+    /// 収録した高フレームレート動画を、実時間を保ったまま高精度モデルで解析する。
+    /// 撮影ガイドのライブ表示は .lite だが、解析パスは .heavy を使う
+    /// （MediaPipePoseEstimator の方針に合わせる）。
+    private func analyzeRecording(at url: URL) async {
+        isAnalyzingRecording = true
+        defer { isAnalyzingRecording = false }
+
+        do {
+            let result = try await VideoPoseAnalyzer().analyze(url: url, model: .heavy)
+            // 前面カメラは鏡像なので、背面カメラと同じ座標系へ揃える。
+            let frames = camera.isMirrored
+                ? result.sequence.frames.map { $0.flippingHorizontally() }
+                : result.sequence.frames
+            recordedSequence = PoseSequence(frames: frames, engine: result.sequence.engine)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     /// 確認を終えたら破棄する。これを呼ばないと自動開始が再開しない。
     func discardRecording() {
         recordedSequence = nil
         exportURL = nil
-        buffer.removeAll()
     }
 
     // MARK: - 自動開始（前面カメラのみ）
