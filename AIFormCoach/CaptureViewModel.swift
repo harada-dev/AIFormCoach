@@ -32,7 +32,7 @@ final class CaptureViewModel: ObservableObject {
     private var estimator: PoseEstimating?
     private var recordingStartMs: Int?
     private var stillSinceMs: Int?
-    /// 収録中に240fpsのまま実時間で書き出している一時ファイル。
+    /// 収録中に120fps級のまま実時間で書き出している一時ファイル。
     private var recordingFileURL: URL?
 
     // 静止判定用。腰の中点の動きを短い窓で見る。
@@ -101,7 +101,7 @@ final class CaptureViewModel: ObservableObject {
         isRecording = true
 
         // 写真ライブラリ経由のスロー動画は再生時間が水増しされ実時間の計測が
-        // できないため、収録中だけ240fps（非対応機種は自動的に下がる）に切り替え、
+        // できないため、収録中だけ120fps級（非対応機種は自動的に下がる）に切り替え、
         // 実時間のまま自前で書き出す。
         camera.beginHighSpeedCapture()
         recordingFileURL = camera.startFileRecording()

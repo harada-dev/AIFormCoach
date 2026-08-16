@@ -28,9 +28,10 @@ final class CameraCapture: NSObject, ObservableObject {
     private var frameCount = 0
     private var device: AVCaptureDevice?
 
-    /// 収録中に試す順番。240fps非対応機種（前面カメラなど）では
-    /// 対応している最大値まで自動的に下がる。
-    private let highSpeedFPSCandidates: [Double] = [240, 120, 60]
+    /// 収録中に試す順番。PRD §4.3の実測により120fps級を仕様値とする
+    /// （240fpsは露光時間1/240秒の制約で屋外・体育館での実用性に懸念があり過剰と判断）。
+    /// 120fps非対応機種（前面カメラなど）では対応している最大値まで自動的に下がる。
+    private let highSpeedFPSCandidates: [Double] = [120, 60]
     private let previewFPS: Double = 30
 
     // MARK: - 実時間での動画書き出し
@@ -167,7 +168,7 @@ final class CameraCapture: NSObject, ObservableObject {
 
     // MARK: - 収録中だけ高フレームレートにする
 
-    /// 収録の直前に呼ぶ。240fps → 120fps → 60fps の順に、機種が対応している
+    /// 収録の直前に呼ぶ。120fps → 60fps の順に、機種が対応している
     /// 最大値を選ぶ。写真ライブラリ経由のスロー動画は再生時間が水増しされて
     /// 実時間の計測ができないため、自前でこの高フレームレートのまま
     /// `startFileRecording()` で書き出す。
@@ -203,7 +204,7 @@ final class CameraCapture: NSObject, ObservableObject {
         queue.async { [weak self] in self?.session.stopRunning() }
     }
 
-    // MARK: - 実時間での動画書き出し（240fps収録用）
+    // MARK: - 実時間での動画書き出し（120fps級収録用）
 
     /// 実際のカメラ映像を実時間のまま一時ファイル(.mov)に書き出す準備をする。
     /// 書き出し自体は最初のフレームが来た時点（`appendToFileRecording`）で
