@@ -24,17 +24,10 @@ struct DiagnosisView: View {
                     }
                 }
 
-                if !diagnosis.acceptable.isEmpty {
-                    goodSection
-                }
-
-                if !diagnosis.referenceOnly.isEmpty {
-                    referenceOnlySection
-                }
-
-                if !diagnosis.unmeasured.isEmpty {
-                    unmeasuredSection
-                }
+                if !diagnosis.acceptable.isEmpty { goodSection }
+                if !diagnosis.suppressed.isEmpty { suppressedSection }
+                if !diagnosis.referenceOnly.isEmpty { referenceOnlySection }
+                if !diagnosis.unmeasured.isEmpty { unmeasuredSection }
 
                 qualitySection
             }
@@ -51,41 +44,24 @@ struct DiagnosisView: View {
             Text("\(diagnosis.side == .right ? "右足" : "左足")で蹴ったフォームを見ました")
                 .font(.title3.bold())
 
-            HStack(spacing: 8) {
-                phaseChip(
-                    .backswing,
-                    timeMs: diagnosis.items.first { $0.metric.phase == .backswing }?.frameTimeMs
-                )
-                if diagnosis.keyFrames.impact != nil {
-                    phaseChip(
-                        .impact,
-                        timeMs: diagnosis.items.first { $0.metric.phase == .impact }?.frameTimeMs
-                    )
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("バックスイング最深")
+                        .font(.caption.bold())
+                    Text("\(diagnosis.backswingTimeMs) ms / 膝 \(Int(diagnosis.backswingKneeAngle))°")
+                        .font(.caption2.monospacedDigit())
+                        .opacity(0.85)
                 }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.tint, in: RoundedRectangle(cornerRadius: 8))
             }
 
-            if let speed = diagnosis.keyFrames.peakToeSpeed {
-                Text("インパクト時のつま先の速さ \(String(format: "%.1f", speed)) m/s（腰から見た相対速度）")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
+            Text("動作の局面は膝の角度から特定しています。膝は下腿・大腿という長い骨から計算するため、推定が安定しています。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-    }
-
-    private func phaseChip(_ phase: ReferenceDatabase.Phase, timeMs: Int?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(phase.rawValue)
-                .font(.caption.bold())
-            if let timeMs {
-                Text("\(timeMs) ms")
-                    .font(.caption2.monospacedDigit())
-                    .opacity(0.8)
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.tint, in: RoundedRectangle(cornerRadius: 8))
     }
 
     // MARK: - 処方カード（三段構成）
@@ -145,6 +121,8 @@ struct DiagnosisView: View {
                             .font(.footnote.bold())
                             .foregroundStyle(.orange)
                     }
+
+                    samplingNote(item)
                 }
             }
 
@@ -180,6 +158,22 @@ struct DiagnosisView: View {
         .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 16))
     }
 
+    /// どう測ったかを明示する。中央値なら枚数とばらつきも出す。
+    private func samplingNote(_ item: DiagnosisEngine.Item) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: item.sampleCount > 1 ? "chart.bar.doc.horizontal" : "camera.metering.spot")
+                .font(.caption2)
+            if item.sampleCount > 1 {
+                Text("\(item.windowStartMs)〜\(item.windowEndMs) ms の \(item.sampleCount) フレームの中央値（ばらつき ±\(String(format: "%.1f", item.spread))\(item.metric.unit)）")
+                    .font(.caption2)
+            } else {
+                Text(item.metric.sampling.explanation)
+                    .font(.caption2)
+            }
+        }
+        .foregroundStyle(.secondary)
+    }
+
     private func tierBlock<Content: View>(
         label: String,
         accent: Color,
@@ -194,7 +188,6 @@ struct DiagnosisView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// 基準値の出典と確度。監修の議論をするために必ず見せる。
     private func provenance(_ metric: ReferenceDatabase.Metric) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Image(systemName: metric.confidence == .supervised ? "book.closed" : "exclamationmark.triangle")
@@ -209,7 +202,7 @@ struct DiagnosisView: View {
         .foregroundStyle(.secondary)
     }
 
-    // MARK: - 各種の注意書き
+    // MARK: - 各種セクション
 
     private var lowConfidenceNotice: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -252,6 +245,34 @@ struct DiagnosisView: View {
         }
     }
 
+    /// 撮影条件が満たされず判定を保留した指標。何をすれば測れるかを書く。
+    private var suppressedSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("撮り方を変えると測れる指標", systemImage: "video.badge.ellipsis")
+                .font(.headline)
+            ForEach(diagnosis.suppressed) { item in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(item.metric.displayName)
+                            .font(.subheadline.bold())
+                        Spacer()
+                        Text(String(format: "%.0f%@", item.measured, item.metric.unit))
+                            .font(.subheadline)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    if let reason = item.suppression {
+                        Text(reason)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+    }
+
     private var referenceOnlySection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("参考の数値")
@@ -278,7 +299,7 @@ struct DiagnosisView: View {
                 .font(.headline)
             Text(diagnosis.unmeasured.joined(separator: "、"))
                 .font(.subheadline)
-            Text("その局面のフレームを特定できなかったか、関節の信頼度が足りませんでした。")
+            Text("必要なフレーム数が足りなかったか、関節の信頼度が不足していました。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -295,6 +316,10 @@ struct DiagnosisView: View {
                 qualityChip("fps", String(format: "%.0f", diagnosis.quality.fps))
                 qualityChip("検出信頼度", String(format: "%.2f", diagnosis.quality.confidence))
                 qualityChip("膝角の変化", String(format: "%.0f°/f", diagnosis.quality.maxKneeDeltaPerFrame))
+                qualityChip(
+                    diagnosis.quality.isSideView ? "真横 ○" : "真横 ✕",
+                    String(format: "%.2f", diagnosis.quality.footShankRatio)
+                )
             }
 
             ForEach(diagnosis.quality.warnings, id: \.self) { warning in
@@ -327,7 +352,7 @@ struct DiagnosisView: View {
 // MARK: - ゲージ
 
 /// 合格範囲と自分の数値の関係を1本のバーで見せる。
-/// 「これ以上あればよい」型の指標では、上限側がすべて緑になる。
+/// 「これ以上あればよい」型の指標では、閾値から右側すべてが緑になる。
 private struct RangeGauge: View {
     let item: DiagnosisEngine.Item
 
@@ -350,6 +375,16 @@ private struct RangeGauge: View {
                         .fill(.green.opacity(0.5))
                         .frame(width: max(end - start, 4), height: 10)
                         .offset(x: start)
+                }
+
+                // 中央値の場合、区間内のばらつきを薄く重ねる
+                if item.sampleCount > 1, item.spread > 0 {
+                    let low = position(item.measured - item.spread, span: span, width: width)
+                    let high = position(item.measured + item.spread, span: span, width: width)
+                    Capsule()
+                        .fill(.primary.opacity(0.25))
+                        .frame(width: max(high - low, 2), height: 16)
+                        .offset(x: low)
                 }
 
                 Capsule()
