@@ -245,50 +245,66 @@ struct DiagnosisView: View {
         }
     }
 
-    /// 撮影条件が満たされず判定を保留した指標。何をすれば測れるかを書く。
+    /// 撮影条件が満たされず計測値も信頼できない指標。
     private var suppressedSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Label("撮り方を変えると測れる指標", systemImage: "video.badge.ellipsis")
                 .font(.headline)
             ForEach(diagnosis.suppressed) { item in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(item.metric.displayName)
-                            .font(.subheadline.bold())
-                        Spacer()
-                        Text(String(format: "%.0f%@", item.measured, item.metric.unit))
-                            .font(.subheadline)
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(item.metric.displayName)
+                        .font(.subheadline.bold())
                     if let reason = item.suppression {
                         Text(reason)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if let note = item.metric.coachingNote {
+                        Text(note)
+                            .font(.subheadline)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(14)
         .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
     }
 
+    /// 基準値が未確定の指標。計測値と、一般的な指導ポイントを分けて出す。
     private var referenceOnlySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("参考の数値")
+        VStack(alignment: .leading, spacing: 14) {
+            Text("参考の数値と共通のポイント")
                 .font(.headline)
-            Text("基準値が未確定のため、計測値のみ表示しています。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
             ForEach(diagnosis.referenceOnly) { item in
-                HStack {
-                    Text(item.metric.displayName)
-                        .font(.subheadline)
-                    Spacer()
-                    Text(String(format: "%.0f%@", item.measured, item.metric.unit))
-                        .font(.subheadline.bold())
-                        .monospacedDigit()
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text(item.metric.displayName)
+                            .font(.subheadline.bold())
+                        Spacer()
+                        Text(String(format: "%.0f%@", item.measured, item.metric.unit))
+                            .font(.subheadline.bold())
+                            .monospacedDigit()
+                    }
+                    Text("この指標は基準値が未確定のため、良い・悪いの判定はしていません。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let note = item.metric.coachingNote {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("みんなに共通のポイント", systemImage: "lightbulb")
+                                .font(.caption.bold())
+                                .foregroundStyle(.orange)
+                            Text(note)
+                                .font(.subheadline)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    provenance(item.metric)
                 }
+                .padding(14)
+                .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 12))
             }
         }
     }
