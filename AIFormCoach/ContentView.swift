@@ -17,16 +17,21 @@ struct AIFormCoachApp: App {
 
 struct ContentView: View {
     @EnvironmentObject private var model: CaptureViewModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingPlayer = false
     @State private var showingVideoAnalysis = false
-    
+
     var body: some View {
         ZStack {
-            CameraPreview(session: model.camera.session)
-                .ignoresSafeArea()
+            if model.isSuspended {
+                Color.black.ignoresSafeArea()
+            } else {
+                CameraPreview(session: model.camera.session)
+                    .ignoresSafeArea()
 
-            SkeletonOverlay(frame: model.latestFrame)
-                .ignoresSafeArea()
+                SkeletonOverlay(frame: model.latestFrame)
+                    .ignoresSafeArea()
+            }
 
             // 収録中は画面の縁を赤く光らせる。数メートル離れても分かる。
             if model.isRecording {
@@ -54,6 +59,20 @@ struct ContentView: View {
         .onDisappear { model.stop() }
         .onChange(of: model.recordedSequence != nil) { _, hasSequence in
             if hasSequence { showingPlayer = true }
+        }
+        .onChange(of: showingPlayer) { _, presented in
+            presented ? model.suspend() : model.resume()
+        }
+        .onChange(of: showingVideoAnalysis) { _, presented in
+            presented ? model.suspend() : model.resume()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // アプリが背面に回ったときも止める。発熱とバッテリーの節約になる。
+            if phase == .active {
+                if !showingPlayer && !showingVideoAnalysis { model.resume() }
+            } else {
+                model.suspend()
+            }
         }
         .sheet(isPresented: $showingPlayer, onDismiss: { model.discardRecording() }) {
             reviewSheet

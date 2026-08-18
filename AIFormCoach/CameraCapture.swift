@@ -26,6 +26,7 @@ final class CameraCapture: NSObject, ObservableObject {
     private let queue = DispatchQueue(label: "camera.capture", qos: .userInitiated)
     private var startTime: CMTime?
     private var frameCount = 0
+    private var lastEmittedMs = -1
     private var device: AVCaptureDevice?
 
     /// 収録中に試す順番。PRD §4.3の実測により120fps級を仕様値とする
@@ -303,7 +304,11 @@ extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
 
         // MediaPipe の liveStream モードはタイムスタンプの単調増加を要求する。
         let elapsed = CMTimeSubtract(pts, start)
-        let ms = Int(CMTimeGetSeconds(elapsed) * 1000)
+        var ms = Int(CMTimeGetSeconds(elapsed) * 1000)
+        // 停止・再開でタイムスタンプが巻き戻ると MediaPipe の推論が止まるため、
+        // 単調増加を保証する。
+        if ms <= lastEmittedMs { ms = lastEmittedMs + 1 }
+        lastEmittedMs = ms
         onSampleBuffer?(sampleBuffer, ms)
     }
 }
