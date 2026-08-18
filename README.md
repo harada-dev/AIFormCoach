@@ -115,6 +115,8 @@ F1の撮影ガイドに「蹴る方向に対して真横」の指定を追加す
 - 骨格ファイル形式 `.fsc`(圧縮JSON)を策定。LINE/AirDrop経由の共有・再生を実機で確認
 - Appleの`.zlib`圧縮は**zlibヘッダのない生DEFLATE**を出力する。Android版・サーバー側で読む際は要注意
 - MediaPipeの`MPImage`は向き指定を反映しない。動画解析時はピクセル自体の回転が必要
+- **リソースは`AIFormCoach/`直下に置く。** ターゲットはXcodeのフォルダ同期(`PBXFileSystemSynchronizedRootGroup`, `path = AIFormCoach`)を使っており、`AIFormCoach/`配下は自動で同梱される。裏を返すと、それ以外の場所に置いた`.task`はビルドが通っても実行時に`modelNotFound`になる。逆に大きい検証用ファイルを誤って`AIFormCoach/`に置くと製品版に混入する
+- モデルは`lite`/`full`/`heavy`の3つとも使用中(ライブ/動画解析の既定/高精度)。合計44.6MBあるが、バンドルサイズ削減の目的で削ってはいけない。減らすならオンデマンドリソース化を検討する
 
 ---
 

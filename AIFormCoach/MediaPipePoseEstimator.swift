@@ -10,6 +10,18 @@ final class MediaPipePoseEstimator: NSObject, PoseEstimating {
 
     /// モデルの精度と速度のトレードオフ。
     /// 撮影ガイド（F1）のライブ表示は .lite、解析パス（F3〜F5）は .heavy を推奨。
+    ///
+    /// **3つの .task はすべて `AIFormCoach/` 直下に置いてください。**
+    /// このターゲットは Xcode のフォルダ同期（PBXFileSystemSynchronizedRootGroup、
+    /// path = AIFormCoach）を使っているため、`AIFormCoach/` に置いたファイルは
+    /// 自動でバンドルに入り、それ以外の場所に置いたファイルは pbxproj に個別参照が
+    /// 無いので永久にバンドルされません。下の `Bundle.main.path` はディレクトリでは
+    /// なくバンドル内の名前で引くため、置き場所を間違えるとビルドは通るのに
+    /// 実行時に modelNotFound で落ちます。
+    ///
+    /// 3ケースとも使用中です（.lite = ライブ、.full = 動画解析の既定、.heavy = 高精度）。
+    /// 合計 44.6 MB ありますが、バンドルサイズ削減のために削らないでください。
+    /// 減らすならオンデマンドリソース化を検討すること。
     enum Model: String {
         case lite = "pose_landmarker_lite"
         case full = "pose_landmarker_full"
