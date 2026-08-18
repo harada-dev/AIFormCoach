@@ -3,7 +3,7 @@ import Foundation
 /// PRD F2「参照コーチングDB」の初版。
 ///
 /// **現時点ではコードに直書きしています。**JSONやサーバー配信への移行は
-/// Alpha で行いますが、構造は最初から出典・監修者・角度定義バージョンを
+/// Alpha で行いますが、構造は最初から出典・確度・角度定義バージョンを
 /// 持たせてあります。基準値の根拠が追跡できない状態を作らないためです。
 ///
 /// **重要:** ここに載せる数値は3D座標・角度定義v2で測ったものでなければ
@@ -12,25 +12,37 @@ enum ReferenceDatabase {
 
     // MARK: - 局面
 
-    /// 動作の局面。指標ごとに「どのフレームで測るか」が変わる。
-    /// 足首の伸びはインパクトの瞬間の指標であり、バックスイングで測っても意味がない。
     enum Phase: String, Sendable, CaseIterable {
         case approach = "踏み込み"
         case backswing = "バックスイング"
-        case impact = "インパクト"
+        case forwardSwing = "振り出し"
         case followThrough = "フォロースルー"
+    }
 
-        /// 代表フレームの選び方。診断画面に出して透明性を持たせる。
-        var frameSelectionNote: String {
+    // MARK: - 測り方
+
+    /// どのフレームから値を取るか。
+    ///
+    /// 足首のように小さく速く動く部位は、1フレームの値では推定誤差を
+    /// そのまま拾ってしまいます。実測では同一動作の2本で13〜15°ずれました。
+    /// 区間の中央値を取ると1〜2°まで縮みます。
+    enum Sampling: Sendable {
+        /// 膝が最も深く曲がったフレームの単一値。
+        /// 膝角のように長い骨から計算する量は1フレームでも安定する（実測で再現性1°）。
+        case backswingFrame
+
+        /// 膝最深から指定ミリ秒までの区間に含まれる全フレームの中央値。
+        ///
+        /// 中央値を使うのは、区間内に1〜2枚の外れ値が混じっても結果が動かないため。
+        /// 平均だと外れ値に引っ張られます。
+        case forwardSwingMedian(windowMs: Int)
+
+        var explanation: String {
             switch self {
-            case .backswing:
-                return "蹴り足の膝が最も深く曲がったフレーム"
-            case .impact:
-                return "バックスイング以降でつま先の速度が最大のフレーム"
-            case .approach:
-                return "収録開始直後"
-            case .followThrough:
-                return "収録終了直前"
+            case .backswingFrame:
+                return "膝が最も深く曲がったフレームの値"
+            case .forwardSwingMedian(let ms):
+                return "膝最深から\(ms)msの区間の中央値"
             }
         }
     }
@@ -40,16 +52,12 @@ enum ReferenceDatabase {
     /// 指標の合否条件。指標によって「範囲に収める」「これ以上あればよい」が異なる。
     ///
     /// 足首の伸びは伸びすぎて困ることが実質ないため、上限を設けると
-    /// 誤って「伸ばしすぎ」と診断してしまう。片側の条件が必要。
+    /// 誤って「伸ばしすぎ」と診断してしまいます。片側の条件が必要です。
     enum Tolerance: Sendable {
-        /// 範囲内に収める
         case within(ClosedRange<Double>)
-        /// この値以上あればよい
         case atLeast(Double)
-        /// この値以下ならよい
         case atMost(Double)
 
-        /// ゲージで緑に塗る範囲。
         func acceptableSpan(in display: ClosedRange<Double>) -> ClosedRange<Double> {
             switch self {
             case .within(let range): return range
@@ -72,7 +80,6 @@ enum ReferenceDatabase {
             }
         }
 
-        /// 診断画面に出す目標の文字列。
         func describe(unit: String) -> String {
             switch self {
             case .within(let range):
@@ -84,7 +91,6 @@ enum ReferenceDatabase {
             }
         }
 
-        /// 条件を満たす境界値。目標までの差を出すのに使う。
         func boundary(for value: Double) -> Double? {
             switch self {
             case .within(let range):
@@ -99,48 +105,36 @@ enum ReferenceDatabase {
         }
     }
 
-    /// 基準値の確度。発表や監修の場で、どこが未確定かを明示するために持つ。
     enum Confidence: String, Sendable {
-        /// 文献・指導者監修で裏付けが取れている
         case supervised = "監修済み"
-        /// 暫定値。根拠はあるが監修前
         case provisional = "暫定値"
-        /// 基準値が未確定。計測のみ行い処方はしない
         case undetermined = "未確定"
     }
 
-    /// ずれの方向ごとの「理由」と「今日のドリル」。
     struct Correction: Sendable {
-        /// なぜそれが問題なのか(PRDの「その理由」)
         let reason: String
         let drillTitle: String
         let drillDetail: String
-        /// PRDの「合格ライン」
         let passLine: String
     }
 
-    /// 1つの計測指標。
     struct Metric: Sendable, Identifiable {
         let id: String
         let displayName: String
-        /// この指標をどの局面で測るか。
         let phase: Phase
-        /// 合否の条件。nil のときは基準値が未確定で、計測値の表示のみ行う。
+        let sampling: Sampling
         let tolerance: Tolerance?
         let unit: String
-        /// ゲージ描画用の表示範囲
         let displayRange: ClosedRange<Double>
-        /// PRD①「憧れの参照(言葉)」。一流の動作を技術用語で言語化したもの。
-        /// 選手名は使わない(パブリシティ権)。
+        /// PRD①「憧れの参照(言葉)」。選手名は使わない(パブリシティ権)。
         let aspiration: String
-        /// 出典。空文字は根拠なしを意味する。
         let source: String
         let confidence: Confidence
-        /// 角度定義バージョン。これが計測側と一致しない値は比較してはならない。
         let angleDefinitionVersion: Int
-        /// 値が条件より大きいとき
+        /// 撮影角度が真横から外れると信頼できない指標か。
+        /// 足部を使う指標は正面撮影で足長が3割短く推定され、実測で13°ずれた。
+        let requiresSideView: Bool
         let whenAbove: Correction?
-        /// 値が条件より小さいとき
         let whenBelow: Correction?
 
         var isPrescribable: Bool { tolerance != nil }
@@ -150,18 +144,19 @@ enum ReferenceDatabase {
 
     static let instepShot: [Metric] = [
 
-        // ── バックスイング ───────────────────────────────
         Metric(
             id: "knee_flexion_backswing",
             displayName: "蹴り足の膝の曲がり",
             phase: .backswing,
+            sampling: .backswingFrame,
             tolerance: .within(90...110),
             unit: "°",
             displayRange: 60...180,
             aspiration: "トップ選手は蹴り足の膝を素早くたたんでバネを作ります。深くたたむほど、振り出しで解放できるエネルギーが大きくなります。",
-            source: "PRD v1.2 §2 の例示値(要監修)",
+            source: "PRD v1.2 §2 の例示値。Phase 0 実測で本気のキック時に106°を確認(要監修)",
             confidence: .provisional,
             angleDefinitionVersion: 2,
+            requiresSideView: false,
             whenAbove: Correction(
                 reason: "膝が伸びたまま振っているため、脚全体を振り回す動きになっています。バネが作れず、力がボールに集まりません。",
                 drillTitle: "かかとをおしりに近づける素振り",
@@ -180,6 +175,7 @@ enum ReferenceDatabase {
             id: "trunk_lean_backswing",
             displayName: "体幹の前傾",
             phase: .backswing,
+            sampling: .backswingFrame,
             tolerance: .within(15...20),
             unit: "°",
             displayRange: 0...60,
@@ -187,6 +183,7 @@ enum ReferenceDatabase {
             source: "PRD v1.2 §2 の例示値(要監修)",
             confidence: .provisional,
             angleDefinitionVersion: 2,
+            requiresSideView: false,
             whenAbove: Correction(
                 reason: "前に倒れすぎているため、軸足に体重が乗り切らず、蹴り足の振りが小さくなります。",
                 drillTitle: "壁タッチ素振り",
@@ -201,31 +198,34 @@ enum ReferenceDatabase {
             )
         ),
 
-        // ── インパクト ───────────────────────────────────
-        //
         // 小学生に非常によく見られる課題。足首が緩んでいると当たり負けして
-        // ボールに力が伝わらない。インパクトの瞬間で測る必要がある。
+        // ボールに力が伝わらない。
         //
-        // 基準値の根拠(暫定):
-        //   この角度定義(膝→足首→つま先の内角)では、足首の中間位が約90°、
-        //   完全に底屈した状態が130〜140°にあたる。Phase 0 の実測では
-        //   1本目が最大110°(伸び不足)、2本目が142°(十分)で、この差が
-        //   まさに指導上の課題に対応していた。そこで 125° 以上を暫定の
-        //   合格線とする。**監修による確定が必要。**
+        // 測り方(Phase 0 実測に基づく):
+        //   膝最深から150msの区間で足首角が台地を作る。この台地の高さが
+        //   「足首を固定して伸ばした状態」に対応する。1フレームの値では
+        //   同一動作で13〜15°ずれたが、区間の中央値では1〜2°に収まった。
+        //   150msという窓幅は、実測で台地がちょうど収まる長さとして決めた。
         //
-        // 伸びすぎて困ることは実質ないため .atLeast を使う。
-        // .within で上限を設けると「伸ばしすぎ」という誤診断が出る。
+        // 基準値 105° の根拠(暫定):
+        //   軽い素振り 92°, 93° / 足首を意識した素振り 100°
+        //   本気のキック 109°, 109° / ボール蹴り 107°
+        //   この分布の谷にあたる 105° を暫定の合格線とした。
+        //   **室内・控えめな強度での実測のため、屋外フルスイングでの
+        //   上限側キャリブレーションが必要。監修による確定も未了。**
         Metric(
-            id: "ankle_plantarflexion_impact",
+            id: "ankle_plantarflexion_forward_swing",
             displayName: "足首の伸び",
-            phase: .impact,
-            tolerance: .atLeast(125),
+            phase: .forwardSwing,
+            sampling: .forwardSwingMedian(windowMs: 150),
+            tolerance: .atLeast(105),
             unit: "°",
-            displayRange: 60...170,
+            displayRange: 80...140,
             aspiration: "足首を伸ばして固定すると、足の甲が硬い一枚の面になります。当たり負けせず、力がそのままボールへ伝わります。",
-            source: "解剖学的可動域と Phase 0 実測レンジ(68〜142°)からの暫定値(要監修)",
+            source: "Phase 0 実測（軽い素振り92〜93° 対 本気のキック107〜109°）の谷に置いた暫定値(要監修)",
             confidence: .provisional,
             angleDefinitionVersion: 2,
+            requiresSideView: true,
             whenAbove: nil,
             whenBelow: Correction(
                 reason: "足首が緩んだまま当たっているため、当たった瞬間に足が負けて力が逃げています。ボールが浮いたり、当たり所がずれる原因になります。",
@@ -236,7 +236,6 @@ enum ReferenceDatabase {
         ),
     ]
 
-    /// 基準値の確度の内訳。発表や監修依頼のときにそのまま提示できる。
     static func confidenceSummary(_ metrics: [Metric]) -> [Confidence: Int] {
         Dictionary(grouping: metrics, by: \.confidence).mapValues(\.count)
     }

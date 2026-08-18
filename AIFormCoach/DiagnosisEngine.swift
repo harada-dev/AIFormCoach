@@ -4,49 +4,36 @@ import Foundation
 /// 「今日直す1点 + 理由 + ドリル + 合格ライン」まで端末内で組み立てる。
 ///
 /// **LLM は呼びません。**処方文はテンプレートへのデータ差し込みです。
-/// PRD §10.4 が「励まし文はテンプレート+データ差し込みを基本とし、
-/// LLMは低頻度」としているため、これは設計通りの構成です。
+///
+/// 設計上の要点(すべて Phase 0 の実測に基づく):
+/// - 局面の特定には膝角を使う。長い骨(下腿43cm・大腿34cm)から計算するため
+///   推定が安定しており、1フレーム変化の中央値は0.2°だった。
+/// - つま先の速度は使わない。座標の差分なので推定誤差が増幅され、
+///   9ms間隔で 0.79 → 3.10 → 1.72 m/s と振動した。
+/// - 足部を使う指標は区間の中央値で測る。1フレームでは同一動作で
+///   13〜15°ずれたが、中央値では1〜2°に収まった。
 enum DiagnosisEngine {
-
-    // MARK: - 代表フレーム
-
-    /// 局面ごとの代表フレーム。指標はそれぞれ自分の局面のフレームで測る。
-    struct KeyFrames: Sendable {
-        let backswing: Int
-        /// バックスイング以降でつま先の速度が最大のフレーム。
-        /// 検出できない場合は nil で、インパクトの指標は計測不能になる。
-        let impact: Int?
-        /// インパクトで観測したつま先の最大速度(m/s)。
-        let peakToeSpeed: Double?
-
-        func index(for phase: ReferenceDatabase.Phase) -> Int? {
-            switch phase {
-            case .backswing: return backswing
-            case .impact: return impact
-            case .approach: return 0
-            case .followThrough: return nil
-            }
-        }
-    }
 
     // MARK: - 結果の型
 
     struct Item: Identifiable, Sendable {
         let metric: ReferenceDatabase.Metric
         let measured: Double
-        /// 実際に測ったフレーム
-        let frameIndex: Int
-        let frameTimeMs: Int
-        /// 条件から外れた量。満たしていれば 0。
+        /// 中央値を取ったフレーム数。単一フレーム測定なら 1。
+        let sampleCount: Int
+        /// 区間内のばらつき(標準偏差)。台地が安定しているかの目安。
+        let spread: Double
+        let windowStartMs: Int
+        let windowEndMs: Int
         let deviation: Double
-        /// 表示範囲に対する逸脱の割合。指標間で優先順位を比べるために正規化する。
         let severity: Double
         let correction: ReferenceDatabase.Correction?
+        /// 撮影条件が満たされないなど、判定を保留した理由。
+        let suppression: String?
 
         var id: String { metric.id }
-        var isAcceptable: Bool { deviation == 0 && metric.isPrescribable }
-
-        /// 条件を満たすために必要な境界値。
+        var isSuppressed: Bool { suppression != nil }
+        var isAcceptable: Bool { deviation == 0 && metric.isPrescribable && !isSuppressed }
         var target: Double? { metric.tolerance?.boundary(for: measured) }
     }
 
@@ -57,6 +44,11 @@ enum DiagnosisEngine {
         let fps: Double
         /// 膝角の1フレームあたり最大変化量。時間解像度の指標。
         let maxKneeDeltaPerFrame: Double
+        /// 足長÷下腿長の中央値。スケールに依存しない撮影角度の指標。
+        /// 実測で真横 0.25〜0.26、正面 0.19。
+        let footShankRatio: Double
+        /// 真横から撮れているか。足部を使う指標の可否を決める。
+        let isSideView: Bool
         let warnings: [String]
 
         var canPrescribe: Bool { hasWorldCoordinates && confidence >= 0.6 }
@@ -65,31 +57,26 @@ enum DiagnosisEngine {
     struct Diagnosis: Sendable {
         let recordedAt: Date
         let side: JointAngles.Side
-        let keyFrames: KeyFrames
+        let backswingIndex: Int
+        let backswingTimeMs: Int
+        let backswingKneeAngle: Double
         let items: [Item]
         let quality: Quality
+        let unmeasured: [String]
 
-        /// PRD「最重要2点」。処方可能なもののうち、逸脱の大きい順に2件。
+        /// PRD「最重要2点」。処方可能で、条件を外していて、保留されていないもの。
         var priorities: [Item] {
             items
-                .filter { $0.metric.isPrescribable && !$0.isAcceptable && $0.correction != nil }
+                .filter { $0.metric.isPrescribable && !$0.isAcceptable
+                    && !$0.isSuppressed && $0.correction != nil }
                 .sorted { $0.severity > $1.severity }
                 .prefix(2)
                 .map { $0 }
         }
 
-        /// 基準値未確定などで参考表示に留まる指標。
-        var referenceOnly: [Item] {
-            items.filter { !$0.metric.isPrescribable }
-        }
-
-        /// 条件を満たしている指標。褒める材料として使う。
-        var acceptable: [Item] {
-            items.filter(\.isAcceptable)
-        }
-
-        /// 局面ごとに測れなかった指標の名前。何が欠けたかを画面に出す。
-        let unmeasured: [String]
+        var acceptable: [Item] { items.filter(\.isAcceptable) }
+        var suppressed: [Item] { items.filter(\.isSuppressed) }
+        var referenceOnly: [Item] { items.filter { !$0.metric.isPrescribable && !$0.isSuppressed } }
     }
 
     enum DiagnosisError: LocalizedError {
@@ -109,9 +96,12 @@ enum DiagnosisEngine {
         }
     }
 
+    /// 足長÷下腿長がこの値を下回ると、カメラに対して奥行き方向を向いていると判断する。
+    /// 実測: 真横 0.25〜0.26 / 正面 0.19。
+    private static let sideViewRatioThreshold = 0.22
+
     // MARK: - 入口
 
-    /// - Parameter side: 蹴り足。自動判定は推定が不安定なため、当面は指定する。
     static func diagnose(
         _ sequence: PoseSequence,
         side: JointAngles.Side = .right,
@@ -125,56 +115,48 @@ enum DiagnosisEngine {
             throw DiagnosisError.keyFrameNotFound
         }
 
-        let impact = impactFrame(sequence, side: side, after: backswing)
-
-        let keyFrames = KeyFrames(
-            backswing: backswing,
-            impact: impact?.index,
-            peakToeSpeed: impact?.speed
-        )
+        let quality = assessQuality(sequence, side: side, backswing: backswing)
+        let backswingFrame = sequence.frames[backswing]
 
         var items: [Item] = []
         var unmeasured: [String] = []
 
         for metric in metrics {
-            guard let index = keyFrames.index(for: metric.phase),
-                  sequence.frames.indices.contains(index),
-                  let measurement = measure(metric, in: sequence.frames[index], side: side)
-            else {
+            guard let sample = sample(metric, in: sequence, from: backswing, side: side) else {
                 unmeasured.append(metric.displayName)
                 continue
             }
 
-            items.append(
-                makeItem(
-                    metric: metric,
-                    measured: measurement.degrees,
-                    frameIndex: index,
-                    frameTimeMs: sequence.frames[index].timestampMs
-                )
-            )
-        }
+            // 撮影角度が満たされない指標は判定を保留する。
+            // 実測では正面撮影で足長が3割短く推定され、軽い素振りでも
+            // 本気のキックに近い値(105°)が出て誤判定になった。
+            let suppression: String? =
+                (metric.requiresSideView && !quality.isSideView)
+                ? "蹴る方向に対して真横から撮影されていないため、この指標は判定できません。"
+                : nil
 
-        let quality = assessQuality(
-            sequence,
-            side: side,
-            keyFrames: keyFrames,
-            metrics: metrics
-        )
+            items.append(makeItem(metric: metric, sample: sample, suppression: suppression))
+        }
 
         return Diagnosis(
             recordedAt: sequence.recordedAt,
             side: side,
-            keyFrames: keyFrames,
+            backswingIndex: backswing,
+            backswingTimeMs: backswingFrame.timestampMs,
+            backswingKneeAngle: JointAngles.kneeFlexion(backswingFrame, side: side)?.degrees ?? 0,
             items: items,
             quality: quality,
             unmeasured: unmeasured
         )
     }
 
-    // MARK: - 代表フレームの検出
+    // MARK: - 局面の特定
 
-    /// 膝角が最小(最も深く曲がった)フレーム。バックスイング最深点の代理指標。
+    /// 膝角が最小(最も深く曲がった)フレーム。バックスイング最深点。
+    ///
+    /// 膝角を使う理由:長い骨から計算するため推定が安定しており、
+    /// 実測で滑らかに単調変化した(1フレーム変化の中央値0.2°)。
+    /// つま先速度は微分でノイズが増幅されるため局面の特定に使えない。
     private static func deepestKneeFlexion(
         _ sequence: PoseSequence,
         side: JointAngles.Side
@@ -194,86 +176,98 @@ enum DiagnosisEngine {
         return best?.index
     }
 
-    /// インパクト。バックスイング以降で蹴り足のつま先速度が最大のフレーム。
-    ///
-    /// 探索をバックスイング以降に限り、かつ蹴り足のみを見ることで、
-    /// 軸足の推定が乱れる区間(実測で 44 m/s の異常値を観測)の影響を受けない。
-    private static func impactFrame(
-        _ sequence: PoseSequence,
-        side: JointAngles.Side,
-        after backswing: Int
-    ) -> (index: Int, speed: Double)? {
-        let frames = sequence.frames
-        guard backswing + 1 < frames.count else { return nil }
+    // MARK: - 測定
 
-        var best: (index: Int, speed: Double)?
-
-        for i in backswing..<(frames.count - 1) {
-            let a = frames[i]
-            let b = frames[i + 1]
-
-            let dt = Double(b.timestampMs - a.timestampMs) / 1000
-            guard dt > 0 else { continue }
-            guard a[side.toe].visibility >= 0.5, b[side.toe].visibility >= 0.5 else { continue }
-            guard let p1 = a.worldPoint(side.toe), let p2 = b.worldPoint(side.toe) else { continue }
-
-            let dx = Double(p2.x - p1.x)
-            let dy = Double(p2.y - p1.y)
-            let dz = Double(p2.z - p1.z)
-            let speed = (dx * dx + dy * dy + dz * dz).squareRoot() / dt
-
-            // 人体としてありえない速度は推定の破綻とみなして採用しない。
-            // 小学生のインステップで観測された妥当な最大は 10 m/s 前後。
-            guard speed < 30 else { continue }
-
-            if best == nil || speed > best!.speed {
-                best = (i, speed)
-            }
-        }
-        return best
+    private struct Sample {
+        let value: Double
+        let count: Int
+        let spread: Double
+        let startMs: Int
+        let endMs: Int
     }
 
-    // MARK: - 計測
-
-    private static func measure(
+    private static func sample(
         _ metric: ReferenceDatabase.Metric,
+        in sequence: PoseSequence,
+        from backswing: Int,
+        side: JointAngles.Side
+    ) -> Sample? {
+        guard metric.angleDefinitionVersion == JointAngles.definitionVersion else { return nil }
+
+        switch metric.sampling {
+
+        case .backswingFrame:
+            let frame = sequence.frames[backswing]
+            guard let m = measurement(of: metric, in: frame, side: side) else { return nil }
+            return Sample(
+                value: m, count: 1, spread: 0,
+                startMs: frame.timestampMs, endMs: frame.timestampMs
+            )
+
+        case .forwardSwingMedian(let windowMs):
+            let origin = sequence.frames[backswing].timestampMs
+            var values: [Double] = []
+            var lastMs = origin
+
+            for index in backswing..<sequence.frames.count {
+                let frame = sequence.frames[index]
+                guard frame.timestampMs - origin <= windowMs else { break }
+                guard let m = measurement(of: metric, in: frame, side: side) else { continue }
+                values.append(m)
+                lastMs = frame.timestampMs
+            }
+
+            // 区間が短すぎると中央値の意味が薄い。実測では104fpsで17枚取れた。
+            guard values.count >= 5 else { return nil }
+
+            return Sample(
+                value: median(values),
+                count: values.count,
+                spread: standardDeviation(values),
+                startMs: origin,
+                endMs: lastMs
+            )
+        }
+    }
+
+    private static func measurement(
+        of metric: ReferenceDatabase.Metric,
         in frame: PoseFrame,
         side: JointAngles.Side
-    ) -> JointAngles.Measurement? {
-        let measurement: JointAngles.Measurement?
+    ) -> Double? {
+        let result: JointAngles.Measurement?
 
         switch metric.id {
         case "knee_flexion_backswing":
-            measurement = JointAngles.kneeFlexion(frame, side: side)
+            result = JointAngles.kneeFlexion(frame, side: side)
         case "trunk_lean_backswing":
-            measurement = JointAngles.trunkLean(frame)
-        case "ankle_plantarflexion_impact":
-            measurement = JointAngles.anklePlantarFlexion(frame, side: side)
+            result = JointAngles.trunkLean(frame)
+        case "ankle_plantarflexion_forward_swing":
+            result = JointAngles.anklePlantarFlexion(frame, side: side)
         default:
-            measurement = nil
+            result = nil
         }
 
-        // 角度定義が一致しない、または画像座標での計測値は基準値と比較できない。
-        guard let m = measurement, m.space == .world else { return nil }
-        guard metric.angleDefinitionVersion == JointAngles.definitionVersion else { return nil }
-        return m
+        // 画像座標での計測値は撮影角度に依存するため基準値と比較できない。
+        guard let m = result, m.space == .world, m.confidence >= 0.5 else { return nil }
+        return m.degrees
     }
 
     private static func makeItem(
         metric: ReferenceDatabase.Metric,
-        measured: Double,
-        frameIndex: Int,
-        frameTimeMs: Int
+        sample: Sample,
+        suppression: String?
     ) -> Item {
         guard let tolerance = metric.tolerance else {
             return Item(
-                metric: metric, measured: measured,
-                frameIndex: frameIndex, frameTimeMs: frameTimeMs,
-                deviation: 0, severity: 0, correction: nil
+                metric: metric, measured: sample.value,
+                sampleCount: sample.count, spread: sample.spread,
+                windowStartMs: sample.startMs, windowEndMs: sample.endMs,
+                deviation: 0, severity: 0, correction: nil, suppression: suppression
             )
         }
 
-        let deviation = tolerance.deviation(of: measured)
+        let deviation = tolerance.deviation(of: sample.value)
         let correction: ReferenceDatabase.Correction? =
             deviation > 0 ? metric.whenAbove : (deviation < 0 ? metric.whenBelow : nil)
 
@@ -282,9 +276,11 @@ enum DiagnosisEngine {
         let severity = span > 0 ? abs(deviation) / span : 0
 
         return Item(
-            metric: metric, measured: measured,
-            frameIndex: frameIndex, frameTimeMs: frameTimeMs,
-            deviation: deviation, severity: severity, correction: correction
+            metric: metric, measured: sample.value,
+            sampleCount: sample.count, spread: sample.spread,
+            windowStartMs: sample.startMs, windowEndMs: sample.endMs,
+            deviation: deviation, severity: severity,
+            correction: correction, suppression: suppression
         )
     }
 
@@ -293,8 +289,7 @@ enum DiagnosisEngine {
     private static func assessQuality(
         _ sequence: PoseSequence,
         side: JointAngles.Side,
-        keyFrames: KeyFrames,
-        metrics: [ReferenceDatabase.Metric]
+        backswing: Int
     ) -> Quality {
         var warnings: [String] = []
 
@@ -303,14 +298,14 @@ enum DiagnosisEngine {
             warnings.append("3D座標が一部のフレームにありません。数値の信頼性が下がります。")
         }
 
-        let confidence = sequence.frames[keyFrames.backswing].coreConfidence
+        let confidence = sequence.frames[backswing].coreConfidence
         if confidence < 0.6 {
             warnings.append("関節の検出信頼度が低いです。明るい場所で全身が映るように撮り直すと精度が上がります。")
         }
 
         let fps = sequence.averageFPS
         if fps < 60 {
-            warnings.append("フレームレートが\(Int(fps))fpsです。インパクトの瞬間を捉えられていない可能性があります。")
+            warnings.append("フレームレートが\(Int(fps))fpsです。インパクト前後の角度を取り逃がしている可能性があります。")
         }
 
         let delta = maxKneeDelta(sequence, side: side)
@@ -318,9 +313,10 @@ enum DiagnosisEngine {
             warnings.append("膝の角度が1フレームで最大\(Int(delta))度動いています。極値を取り逃がしている可能性があります。")
         }
 
-        if keyFrames.impact == nil,
-           metrics.contains(where: { $0.phase == .impact }) {
-            warnings.append("インパクトのフレームを特定できませんでした。蹴る動作全体が収まるように撮影してください。")
+        let ratio = footShankRatio(sequence, side: side)
+        let isSideView = ratio >= sideViewRatioThreshold
+        if !isSideView {
+            warnings.append("足の長さが短く推定されています(比 \(String(format: "%.2f", ratio)))。蹴る方向に対して真横から撮ると、足首の指標が測れるようになります。")
         }
 
         return Quality(
@@ -328,8 +324,33 @@ enum DiagnosisEngine {
             confidence: confidence,
             fps: fps,
             maxKneeDeltaPerFrame: delta,
+            footShankRatio: ratio,
+            isSideView: isSideView,
             warnings: warnings
         )
+    }
+
+    /// 足長÷下腿長の中央値。解剖学的にはほぼ一定であるべき指標なので、
+    /// 小さく出れば足が奥行き方向を向いている(=真横から撮れていない)。
+    private static func footShankRatio(
+        _ sequence: PoseSequence,
+        side: JointAngles.Side
+    ) -> Double {
+        var ratios: [Double] = []
+
+        for frame in sequence.frames {
+            guard let heel = frame.worldPoint(side.heel),
+                  let toe = frame.worldPoint(side.toe),
+                  let knee = frame.worldPoint(side.knee),
+                  let ankle = frame.worldPoint(side.ankle)
+            else { continue }
+
+            let foot = distance(heel, toe)
+            let shank = distance(knee, ankle)
+            guard shank > 0.05 else { continue }
+            ratios.append(foot / shank)
+        }
+        return ratios.isEmpty ? 0 : median(ratios)
     }
 
     private static func maxKneeDelta(
@@ -347,5 +368,28 @@ enum DiagnosisEngine {
             previous = m.degrees
         }
         return maximum
+    }
+
+    // MARK: - 補助
+
+    private static func distance(_ a: WorldPoint, _ b: WorldPoint) -> Double {
+        let dx = Double(a.x - b.x), dy = Double(a.y - b.y), dz = Double(a.z - b.z)
+        return (dx * dx + dy * dy + dz * dz).squareRoot()
+    }
+
+    private static func median(_ values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let mid = sorted.count / 2
+        return sorted.count % 2 == 0
+            ? (sorted[mid - 1] + sorted[mid]) / 2
+            : sorted[mid]
+    }
+
+    private static func standardDeviation(_ values: [Double]) -> Double {
+        guard values.count > 1 else { return 0 }
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count - 1)
+        return variance.squareRoot()
     }
 }
