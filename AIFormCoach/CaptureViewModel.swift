@@ -22,6 +22,14 @@ final class CaptureViewModel: ObservableObject {
     /// 収録した高フレームレート動画を解析中。
     @Published var isAnalyzingRecording = false
 
+    /// 撮影を停止しているか。
+    ///
+    /// **シートや別画面を開いている間は必ず true にする。**
+    /// これを持たずに「収録結果が無いこと」などの間接的な条件で
+    /// 自動開始を抑止していたため、動画解析シートの裏で勝手に収録が
+    /// 始まるバグが発生した。停止は明示的な状態として持つ。
+    @Published private(set) var isSuspended = false
+
     /// PRD の 5 秒制限。ここを超えたら自動で収録を終える。
     let maxDurationMs = 5_000
 
@@ -34,6 +42,7 @@ final class CaptureViewModel: ObservableObject {
     private var stillSinceMs: Int?
     /// 収録中に120fps級のまま実時間で書き出している一時ファイル。
     private var recordingFileURL: URL?
+    private var isStarted = false
 
     // 静止判定用。腰の中点の動きを短い窓で見る。
     private var hipHistory: [(ms: Int, x: Float, y: Float)] = []
@@ -44,6 +53,8 @@ final class CaptureViewModel: ObservableObject {
     // MARK: - 起動
 
     func start() async {
+        guard !isStarted else { return }
+
         guard await camera.requestAccess() else {
             permissionDenied = true
             return
@@ -58,9 +69,12 @@ final class CaptureViewModel: ObservableObject {
 
             try camera.configure(targetFPS: 30, targetWidth: 1280)
             camera.onSampleBuffer = { [weak self] buffer, ms in
-                self?.estimator?.submit(sampleBuffer: buffer, timestampMs: ms)
+                // 停止中は推論に渡さない。渡すと発熱するだけで意味がない。
+                guard let self, !self.isSuspended else { return }
+                self.estimator?.submit(sampleBuffer: buffer, timestampMs: ms)
             }
             camera.start()
+            isStarted = true
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -68,6 +82,29 @@ final class CaptureViewModel: ObservableObject {
 
     func stop() {
         camera.stop()
+    }
+
+    // MARK: - 停止と再開
+
+    /// シートや別画面を開くときに呼ぶ。カメラと推論を止め、骨格表示も消す。
+    func suspend() {
+        guard !isSuspended else { return }
+        isSuspended = true
+
+        // 収録中に画面が切り替わった場合は、そこまでの分を確定させる。
+        if isRecording { finishRecording() }
+
+        camera.stop()
+        latestFrame = nil
+        resetAutoStart()
+    }
+
+    /// 撮影画面に戻ったときに呼ぶ。
+    func resume() {
+        guard isSuspended else { return }
+        isSuspended = false
+        resetAutoStart()
+        camera.start()
     }
 
     // MARK: - カメラ切り替え
@@ -85,6 +122,7 @@ final class CaptureViewModel: ObservableObject {
     // MARK: - 収録
 
     func toggleRecording() {
+        guard !isSuspended else { return }
         if isRecording {
             finishRecording()
         } else {
@@ -108,6 +146,10 @@ final class CaptureViewModel: ObservableObject {
     }
 
     private func receive(_ frame: PoseFrame) {
+        // 停止直後に到着した処理中のフレームを捨てる。
+        // 推論は非同期なので、camera.stop() の後にも数枚届きうる。
+        guard !isSuspended else { return }
+
         // インカメラは鏡像なので、関節の左右ラベルを入れ替えてから使う
         let frame = camera.isMirrored ? frame.swappingLeftRight() : frame
         latestFrame = frame
@@ -174,7 +216,7 @@ final class CaptureViewModel: ObservableObject {
     /// 全身が画角に入り、かつ静止したら収録を始める。
     /// 背面カメラ（人に撮ってもらう場合）は手動シャッターのままにする。
     private func updateAutoStart(with frame: PoseFrame) {
-        guard camera.isMirrored, recordedSequence == nil, !isExporting else {
+        guard !isSuspended, camera.isMirrored, recordedSequence == nil, !isExporting else {
             resetAutoStart()
             return
         }
@@ -275,7 +317,7 @@ final class CaptureViewModel: ObservableObject {
 
     /// 画面上部に出すガイド文。カウントダウン中と収録中は大きい表示に任せる。
     var guidanceMessage: String? {
-        if isRecording || isCountingDown { return nil }
+        if isSuspended || isRecording || isCountingDown { return nil }
 
         if isFrontCamera, let frame = latestFrame {
             if !frame.isFullBodyInFrame { return "全身が入るまで下がってください" }
@@ -294,7 +336,7 @@ final class CaptureViewModel: ObservableObject {
     }
 
     var liveMeasurements: [(String, JointAngles.Measurement?)] {
-        guard let frame = latestFrame else { return [] }
+        guard !isSuspended, let frame = latestFrame else { return [] }
         return [
             ("右膝の曲がり", JointAngles.kneeFlexion(frame, side: .right)),
             ("体幹の前傾", JointAngles.trunkLean(frame)),
