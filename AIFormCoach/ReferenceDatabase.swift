@@ -49,10 +49,6 @@ enum ReferenceDatabase {
 
     // MARK: - 合否の条件
 
-    /// 指標の合否条件。指標によって「範囲に収める」「これ以上あればよい」が異なる。
-    ///
-    /// 足首の伸びは伸びすぎて困ることが実質ないため、上限を設けると
-    /// 誤って「伸ばしすぎ」と診断してしまいます。片側の条件が必要です。
     enum Tolerance: Sendable {
         case within(ClosedRange<Double>)
         case atLeast(Double)
@@ -66,7 +62,6 @@ enum ReferenceDatabase {
             }
         }
 
-        /// 条件から外れた量。範囲内なら 0。上に外れていれば正、下なら負。
         func deviation(of value: Double) -> Double {
             switch self {
             case .within(let range):
@@ -123,6 +118,7 @@ enum ReferenceDatabase {
         let displayName: String
         let phase: Phase
         let sampling: Sampling
+        /// 合否の条件。nil のときは基準値が未確定で、計測値の表示のみ行う。
         let tolerance: Tolerance?
         let unit: String
         let displayRange: ClosedRange<Double>
@@ -132,8 +128,13 @@ enum ReferenceDatabase {
         let confidence: Confidence
         let angleDefinitionVersion: Int
         /// 撮影角度が真横から外れると信頼できない指標か。
-        /// 足部を使う指標は正面撮影で足長が3割短く推定され、実測で13°ずれた。
         let requiresSideView: Bool
+        /// 計測値によらず伝える一般的な指導ポイント。
+        ///
+        /// **数値による診断とは明確に区別すること。**測れていない数値を根拠に
+        /// 「あなたはできていない」と言うのは根拠のない診断になります。
+        /// ここに入れるのは「その動作では共通して大切なこと」だけです。
+        let coachingNote: String?
         let whenAbove: Correction?
         let whenBelow: Correction?
 
@@ -153,10 +154,11 @@ enum ReferenceDatabase {
             unit: "°",
             displayRange: 60...180,
             aspiration: "トップ選手は蹴り足の膝を素早くたたんでバネを作ります。深くたたむほど、振り出しで解放できるエネルギーが大きくなります。",
-            source: "PRD v1.2 §2 の例示値。Phase 0 実測で本気のキック時に106°を確認(要監修)",
+            source: "PRD v1.2 §2 の例示値。Phase 0 実測で本気のキック時に106°を確認。動作強度に応じて155°→106°まで単調に変化(要監修)",
             confidence: .provisional,
             angleDefinitionVersion: 2,
             requiresSideView: false,
+            coachingNote: nil,
             whenAbove: Correction(
                 reason: "膝が伸びたまま振っているため、脚全体を振り回す動きになっています。バネが作れず、力がボールに集まりません。",
                 drillTitle: "かかとをおしりに近づける素振り",
@@ -180,10 +182,11 @@ enum ReferenceDatabase {
             unit: "°",
             displayRange: 0...60,
             aspiration: "上体をわずかに前へ倒すことで、軸足の踏み込みが深くなり、下半身の力が上体に逃げずに脚へ伝わります。",
-            source: "PRD v1.2 §2 の例示値(要監修)",
+            source: "PRD v1.2 §2 の例示値。Phase 0 実測でしっかり蹴った際に15°を確認(要監修)",
             confidence: .provisional,
             angleDefinitionVersion: 2,
             requiresSideView: false,
+            coachingNote: nil,
             whenAbove: Correction(
                 reason: "前に倒れすぎているため、軸足に体重が乗り切らず、蹴り足の振りが小さくなります。",
                 drillTitle: "壁タッチ素振り",
@@ -198,41 +201,44 @@ enum ReferenceDatabase {
             )
         ),
 
-        // 小学生に非常によく見られる課題。足首が緩んでいると当たり負けして
-        // ボールに力が伝わらない。
+        // ── 足首の伸び:計測はするが処方はしない ─────────────────────
         //
-        // 測り方(Phase 0 実測に基づく):
-        //   膝最深から150msの区間で足首角が台地を作る。この台地の高さが
-        //   「足首を固定して伸ばした状態」に対応する。1フレームの値では
-        //   同一動作で13〜15°ずれたが、区間の中央値では1〜2°に収まった。
-        //   150msという窓幅は、実測で台地がちょうど収まる長さとして決めた。
+        // 指導上は極めて重要な指標（足首が緩むと当たり負けして力が逃げる）。
+        // しかし Phase 0 の実測で、現状の計測系では判別できないと結論した。
         //
-        // 基準値 105° の根拠(暫定):
-        //   軽い素振り 92°, 93° / 足首を意識した素振り 100°
-        //   本気のキック 109°, 109° / ボール蹴り 107°
-        //   この分布の谷にあたる 105° を暫定の合格線とした。
-        //   **室内・控えめな強度での実測のため、屋外フルスイングでの
-        //   上限側キャリブレーションが必要。監修による確定も未了。**
+        // 実測の内訳（すべて窓の中央値、真横撮影）:
+        //   軽い素振り            92°, 93°
+        //   足首を意識した素振り   100°
+        //   足首を伸ばさずパス     105°   ← 意図的に緩めた
+        //   ボール蹴り            107°
+        //   本気の素振り          109°, 109°
+        //   しっかり蹴った        111°   ← 意図的に伸ばした
+        //
+        // 問題:「伸ばした」111° と「伸ばさない」105° の差が 6° しかない。
+        // 一方で足長（かかと-つま先）の変動係数は 23%（下腿は 5%）で、
+        // 10cm の足に対して ±2.3cm の推定誤差 = 角度換算で 10° 以上。
+        // **測りたい差が誤差より小さい。**
+        // さらに値は「足首を伸ばす意識」よりも「振りの速さ」と相関していた。
+        //
+        // 根本原因は MediaPipe の足部キーポイント（かかと・つま先の2点）の
+        // 推定精度が、この指標に必要な分解能に届いていないこと。
+        // 復活させる正攻法は複数アングルからの3D推定（PRD 将来バックログ）。
         Metric(
             id: "ankle_plantarflexion_forward_swing",
             displayName: "足首の伸び",
             phase: .forwardSwing,
             sampling: .forwardSwingMedian(windowMs: 150),
-            tolerance: .atLeast(105),
+            tolerance: nil,
             unit: "°",
             displayRange: 80...140,
             aspiration: "足首を伸ばして固定すると、足の甲が硬い一枚の面になります。当たり負けせず、力がそのままボールへ伝わります。",
-            source: "Phase 0 実測（軽い素振り92〜93° 対 本気のキック107〜109°）の谷に置いた暫定値(要監修)",
-            confidence: .provisional,
+            source: "足部キーポイントの推定誤差（足長の変動係数23%）が必要分解能に届かず、処方対象外とした。Phase 0 実測に基づく判断",
+            confidence: .undetermined,
             angleDefinitionVersion: 2,
             requiresSideView: true,
+            coachingNote: "インステップで蹴るときは、つま先を下に向けたまま足首を固定して当てるのが共通のポイントです。足首が緩むとボールが浮いたり、当たり所がずれやすくなります。椅子に座って足首を伸ばした形を5秒キープ×10回、そのあと止まったボールを足の甲の同じ場所で10本蹴る練習が効果的です。",
             whenAbove: nil,
-            whenBelow: Correction(
-                reason: "足首が緩んだまま当たっているため、当たった瞬間に足が負けて力が逃げています。ボールが浮いたり、当たり所がずれる原因になります。",
-                drillTitle: "つま先を伸ばして甲で当てる",
-                drillDetail: "椅子に座り、足首を伸ばしてつま先を下に向けた形を5秒キープ×10回。そのあと止まったボールを、足の甲の同じ場所で10本蹴ります。強く蹴らず、当てる場所を揃えることを優先します。",
-                passLine: "10本中7本、足の甲の同じ場所に当たる"
-            )
+            whenBelow: nil
         ),
     ]
 
