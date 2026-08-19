@@ -55,8 +55,13 @@ enum JointAngles {
 
     // MARK: - 膝屈曲
 
-    /// 膝の内角。180° = 完全伸展、値が小さいほど深く折りたたまれている。
-    /// PRD の基準値「バックスイング時の膝屈曲 90〜110°」はこの定義。
+    /// 膝の**内角**。180° = 完全伸展、値が小さいほど深く折りたたまれている。
+    ///
+    /// PRD の例示値「バックスイング時の膝屈曲 90〜110°」はこの内角定義で
+    /// 書かれているが、同じ数値を「0° = 完全伸展」として扱う文書もあり
+    /// 定義が衝突していた。文献値を内角に換算すると 68〜87° になり
+    /// 90〜110° と重ならないため、合否判定には使わないことにした。
+    /// 経緯は `ReferenceDatabase.knee_flexion_backswing` のコメント参照。
     static func kneeFlexion(_ frame: PoseFrame, side: Side) -> Measurement? {
         angle(at: side.knee, from: side.hip, to: side.ankle, in: frame)
     }
@@ -78,10 +83,16 @@ enum JointAngles {
     // MARK: - 体幹前傾
 
     /// 肩中点→腰中点のベクトルが鉛直から何度傾いているか。
-    /// PRD の基準値「体幹前傾 15〜20°」はこの定義。
     ///
     /// 3D で計算する場合、左右への傾き（側屈）と前後の傾きの両方を含んだ
     /// 「鉛直からのずれ」になります。2D では奥行き方向の傾きが失われます。
+    ///
+    /// **符号を持たないため前傾・後傾・側屈を区別できません。**
+    /// PRD の例示値「体幹前傾 15〜20°」は前傾を意図していますが、この計測では
+    /// 前傾18°と後傾18°と側屈18°が同じ値になります。文献値もこれと定義が合わず
+    /// (Alcock et al. 2012 は対鉛直グローバル角で −5.8 ± 8.3°、すなわち後傾)、
+    /// 合否判定には使わないことにしました。
+    /// 経緯は `ReferenceDatabase.trunk_lean_backswing` のコメント参照。
     static func trunkLean(_ frame: PoseFrame) -> Measurement? {
         let joints: [PoseJoint] = [.leftShoulder, .rightShoulder, .leftHip, .rightHip]
         guard let confidence = confidence(of: joints, in: frame) else { return nil }
