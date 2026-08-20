@@ -62,19 +62,20 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             // アプリが背面に回ったときも止める。発熱とバッテリーの節約になる。
+            // 解析中や確認シート表示中は別の理由で止まっているので、
+            // ここでは前面かどうかだけを見ればよい。以前はこの分岐が
+            // 他の停止理由を条件で列挙していて、解析中を取りこぼしていた。
             if phase == .active {
-                if !showingPlayer && !showingVideoAnalysis { model.resume() }
+                model.resume(.background)
             } else {
-                model.suspend()
+                model.suspend(.background)
             }
         }
         .sheet(isPresented: $showingPlayer, onDismiss: { model.discardRecording() }) {
+            // このシートの停止（.reviewing）は recordedSequence の有無に紐づけて
+            // CaptureViewModel 側が持っている。シートのライフサイクルに紐づけると、
+            // 解析完了からシート表示までの隙間でカメラが一瞬 ON に戻る。
             reviewSheet
-                // シートの表示・非表示そのものに直接紐付ける。$showingPlayer の
-                // 変化を onChange で追いかける形だと、シートの表示アニメーションと
-                // 状態更新の順序次第でカメラが一瞬 ON に戻ることがあった。
-                .onAppear { model.suspend() }
-                .onDisappear { model.resume() }
         }
         .alert("エラー", isPresented: .constant(model.errorMessage != nil)) {
             Button("OK") { model.errorMessage = nil }
@@ -216,8 +217,8 @@ struct ContentView: View {
             // 2つ並べると、2枚目の提示が失敗して即座に閉じてしまう。
             .sheet(isPresented: $showingVideoAnalysis) {
                 VideoAnalysisView()
-                    .onAppear { model.suspend() }
-                    .onDisappear { model.resume() }
+                    .onAppear { model.suspend(.videoAnalysisSheet) }
+                    .onDisappear { model.resume(.videoAnalysisSheet) }
             }
         }
     }

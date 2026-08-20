@@ -22,13 +22,30 @@ final class CaptureViewModel: ObservableObject {
     /// 収録した高フレームレート動画を解析中。
     @Published var isAnalyzingRecording = false
 
-    /// 撮影を停止しているか。
+    /// 撮影を止めている理由。ひとつでも残っていれば停止する。
     ///
-    /// **シートや別画面を開いている間は必ず true にする。**
-    /// これを持たずに「収録結果が無いこと」などの間接的な条件で
-    /// 自動開始を抑止していたため、動画解析シートの裏で勝手に収録が
-    /// 始まるバグが発生した。停止は明示的な状態として持つ。
-    @Published private(set) var isSuspended = false
+    /// **止める側と再開する側が、必ず同じ理由を指定して対で呼ぶ。**
+    /// 単一の Bool で持っていたときは「解析中」という理由を scenePhase 側が
+    /// 知らず、バックグラウンドから復帰すると解析の途中でカメラが再開した。
+    /// 停止回数のカウンタにしても、呼び出しが1つずれるだけでカメラが
+    /// 永久に止まったり逆に止まらなくなったりして、原因も追えない。
+    /// 集合なら同じ理由の二重登録は無害で、取りこぼしても影響はその理由に閉じる。
+    @Published private(set) var suspendReasons: Set<SuspendReason> = []
+
+    /// 撮影を止めたい理由。増やすときは対応する `resume(_:)` を必ず用意する。
+    enum SuspendReason: String, Sendable, CaseIterable {
+        /// 収録直後の解析中。結果が出るか失敗するまで続く。
+        case analyzing
+        /// 収録結果の確認シートを表示中。
+        case reviewing
+        /// 「動画から骨格をつくる」シートを表示中。
+        case videoAnalysisSheet
+        /// アプリが前面にいない。
+        case background
+    }
+
+    /// 撮影を停止しているか。
+    var isSuspended: Bool { !suspendReasons.isEmpty }
 
     /// PRD の 5 秒制限。ここを超えたら自動で収録を終える。
     let maxDurationMs = 5_000
@@ -86,12 +103,16 @@ final class CaptureViewModel: ObservableObject {
 
     // MARK: - 停止と再開
 
-    /// シートや別画面を開くときに呼ぶ。カメラと推論を止め、骨格表示も消す。
-    func suspend() {
-        guard !isSuspended else { return }
-        isSuspended = true
+    /// 指定した理由で撮影を止める。すでに別の理由で止まっている場合は理由を足すだけ。
+    /// 同じ理由を重ねて呼んでも安全。
+    func suspend(_ reason: SuspendReason) {
+        let wasRunning = suspendReasons.isEmpty
+        suspendReasons.insert(reason)
+        guard wasRunning else { return }
 
         // 収録中に画面が切り替わった場合は、そこまでの分を確定させる。
+        // finishRecording() は .analyzing を足すが、この時点で集合はもう
+        // 空ではないので、カメラの停止が二重に走ることはない。
         if isRecording { finishRecording() }
 
         camera.stop()
@@ -99,10 +120,10 @@ final class CaptureViewModel: ObservableObject {
         resetAutoStart()
     }
 
-    /// 撮影画面に戻ったときに呼ぶ。
-    func resume() {
-        guard isSuspended else { return }
-        isSuspended = false
+    /// 指定した理由を取り下げる。他の理由が残っていれば停止は続く。
+    /// 登録されていない理由を渡しても何も起きない。
+    func resume(_ reason: SuspendReason) {
+        guard suspendReasons.remove(reason) != nil, suspendReasons.isEmpty else { return }
         resetAutoStart()
         camera.start()
     }
@@ -134,6 +155,10 @@ final class CaptureViewModel: ObservableObject {
         recordingStartMs = nil
         recordedSequence = nil
         exportURL = nil
+        // 前回の確認結果を捨てるので、その停止理由も一緒に取り下げる。
+        // ここに来る経路はどれも停止中でないため通常は何も起きないが、
+        // recordedSequence を nil にする箇所と .reviewing の解除を対で保つ。
+        resume(.reviewing)
         recordingRemainingMs = maxDurationMs
         resetAutoStart()
         isRecording = true
@@ -177,15 +202,16 @@ final class CaptureViewModel: ObservableObject {
         guard recordingFileURL != nil else { return }
         recordingFileURL = nil
 
-        // 解析中もカメラ・推論を止める。結果が出て確認シートが開けば
-        // その onChange が停止を引き継ぐので、ここでは解析失敗時だけ
-        // 明示的に再開する。
-        suspend()
+        // 解析が終わるまでカメラ・推論を止める。成功した場合は
+        // analyzeRecording() が .reviewing を足したあとに .analyzing が外れるので、
+        // 確認シートが出るまでの隙間でカメラが一瞬 ON に戻ることはない。
+        suspend(.analyzing)
 
         Task {
+            defer { resume(.analyzing) }
+
             guard let savedURL = await camera.stopFileRecording() else {
                 errorMessage = "収録データの保存に失敗しました。"
-                resume()
                 return
             }
             await analyzeRecording(at: savedURL)
@@ -206,11 +232,11 @@ final class CaptureViewModel: ObservableObject {
                 ? result.sequence.frames.map { $0.flippingHorizontally() }
                 : result.sequence.frames
             recordedSequence = PoseSequence(frames: frames, engine: result.sequence.engine)
-            // recordedSequence の変化で確認シートが開き、その onChange が
-            // 停止を引き継ぐので、ここでは resume() を呼ばない。
+            // 停止理由を .analyzing から .reviewing へ引き継ぐ。呼び出し元の
+            // defer で .analyzing が外れるより先にここを通るので、集合は空にならない。
+            suspend(.reviewing)
         } catch {
             errorMessage = error.localizedDescription
-            resume()
         }
     }
 
@@ -218,6 +244,7 @@ final class CaptureViewModel: ObservableObject {
     func discardRecording() {
         recordedSequence = nil
         exportURL = nil
+        resume(.reviewing)
     }
 
     // MARK: - 自動開始（前面カメラのみ）
@@ -303,6 +330,8 @@ final class CaptureViewModel: ObservableObject {
     func open(url: URL) {
         do {
             recordedSequence = try SkeletonDocument.read(from: url)
+            // 収録経由と同じく、確認シートを閉じるまで撮影を止める。
+            suspend(.reviewing)
         } catch {
             errorMessage = error.localizedDescription
         }
