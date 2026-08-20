@@ -60,12 +60,6 @@ struct ContentView: View {
         .onChange(of: model.recordedSequence != nil) { _, hasSequence in
             if hasSequence { showingPlayer = true }
         }
-        .onChange(of: showingPlayer) { _, presented in
-            presented ? model.suspend() : model.resume()
-        }
-        .onChange(of: showingVideoAnalysis) { _, presented in
-            presented ? model.suspend() : model.resume()
-        }
         .onChange(of: scenePhase) { _, phase in
             // アプリが背面に回ったときも止める。発熱とバッテリーの節約になる。
             if phase == .active {
@@ -76,6 +70,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingPlayer, onDismiss: { model.discardRecording() }) {
             reviewSheet
+                // シートの表示・非表示そのものに直接紐付ける。$showingPlayer の
+                // 変化を onChange で追いかける形だと、シートの表示アニメーションと
+                // 状態更新の順序次第でカメラが一瞬 ON に戻ることがあった。
+                .onAppear { model.suspend() }
+                .onDisappear { model.resume() }
         }
         .alert("エラー", isPresented: .constant(model.errorMessage != nil)) {
             Button("OK") { model.errorMessage = nil }
@@ -217,6 +216,8 @@ struct ContentView: View {
             // 2つ並べると、2枚目の提示が失敗して即座に閉じてしまう。
             .sheet(isPresented: $showingVideoAnalysis) {
                 VideoAnalysisView()
+                    .onAppear { model.suspend() }
+                    .onDisappear { model.resume() }
             }
         }
     }

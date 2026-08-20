@@ -177,9 +177,15 @@ final class CaptureViewModel: ObservableObject {
         guard recordingFileURL != nil else { return }
         recordingFileURL = nil
 
+        // 解析中もカメラ・推論を止める。結果が出て確認シートが開けば
+        // その onChange が停止を引き継ぐので、ここでは解析失敗時だけ
+        // 明示的に再開する。
+        suspend()
+
         Task {
             guard let savedURL = await camera.stopFileRecording() else {
                 errorMessage = "収録データの保存に失敗しました。"
+                resume()
                 return
             }
             await analyzeRecording(at: savedURL)
@@ -200,8 +206,11 @@ final class CaptureViewModel: ObservableObject {
                 ? result.sequence.frames.map { $0.flippingHorizontally() }
                 : result.sequence.frames
             recordedSequence = PoseSequence(frames: frames, engine: result.sequence.engine)
+            // recordedSequence の変化で確認シートが開き、その onChange が
+            // 停止を引き継ぐので、ここでは resume() を呼ばない。
         } catch {
             errorMessage = error.localizedDescription
+            resume()
         }
     }
 
