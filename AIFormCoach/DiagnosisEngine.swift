@@ -77,6 +77,14 @@ enum DiagnosisEngine {
         var acceptable: [Item] { items.filter(\.isAcceptable) }
         var suppressed: [Item] { items.filter(\.isSuppressed) }
         var referenceOnly: [Item] { items.filter { !$0.metric.isPrescribable && !$0.isSuppressed } }
+
+        /// 実際に合否の判定にかけた指標。
+        ///
+        /// `priorities` が空でも「全部できていた」とは限りません。基準値が未確定
+        /// (`tolerance == nil`)の指標や撮影条件で保留した指標は最初から判定に
+        /// かかっていないため、これが空のときは「合格した」ではなく
+        /// 「そもそも判定していない」が正しい説明になります。
+        var judged: [Item] { items.filter { $0.metric.isPrescribable && !$0.isSuppressed } }
     }
 
     enum DiagnosisError: LocalizedError {

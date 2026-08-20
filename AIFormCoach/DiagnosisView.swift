@@ -16,6 +16,10 @@ struct DiagnosisView: View {
 
                 if !diagnosis.quality.canPrescribe {
                     lowConfidenceNotice
+                } else if diagnosis.judged.isEmpty {
+                    // 判定にかけた指標が1つも無いときに allClearNotice を出すと
+                    // 「すべて基準を満たしていた」と嘘をつくことになる。
+                    notJudgedNotice
                 } else if diagnosis.priorities.isEmpty {
                     allClearNotice
                 } else {
@@ -213,6 +217,26 @@ struct DiagnosisView: View {
         }
         .padding(16)
         .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// 合否の判定にかけた指標が1つも無かったとき。
+    ///
+    /// 「測れたが判定していない」と「そもそも測れていない」は原因が別なので
+    /// 文言を分ける。基準値が未確定である旨は referenceOnlySection 側に
+    /// 書いてあるので、ここでは繰り返さずそちらを見るよう促すだけにする。
+    private var notJudgedNotice: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("今回は合否の判定をしていません", systemImage: "info.circle.fill")
+                .font(.headline)
+            Text(
+                diagnosis.items.isEmpty
+                    ? "指標を1つも測れなかったため、判定できませんでした。下の「測れなかった指標」を確認して、蹴る方向に対して真横から、全身が映るように撮り直してください。"
+                    : "基準値が確定している指標が無いため、良い・悪いの判定は行っていません。測れた数値は下の「参考の数値と共通のポイント」にまとめています。"
+            )
+            .font(.subheadline)
+        }
+        .padding(16)
+        .background(.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var allClearNotice: some View {
