@@ -42,6 +42,58 @@ final class CameraCapture: NSObject, ObservableObject {
     private var assetWriter: AVAssetWriter?
     private var assetWriterInput: AVAssetWriterInput?
 
+    /// 直近で呼ばれたのが start() か stop() か。
+    ///
+    /// バックグラウンドへ長く置かれた・他アプリ(共有シート経由のFilesなど)に
+    /// フォーカスを奪われた場合、iOS 側が `AVCaptureSession` を中断
+    /// (`wasInterrupted`)することがある。中断中に `startRunning()` を呼んでも
+    /// 実際には開始されず、単に `isRunning` の値だけを信じて「動いている」と
+    /// 判断すると、復帰後も見た目は黒いまま固まる。中断が終わった通知を受けて
+    /// 「本来動いているべきだったか」をこの値で判断し、必要なら再試行する。
+    private var shouldBeRunning = false
+
+    override init() {
+        super.init()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(sessionWasInterrupted),
+            name: AVCaptureSession.wasInterruptedNotification, object: session
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(sessionInterruptionEnded),
+            name: AVCaptureSession.interruptionEndedNotification, object: session
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(sessionRuntimeError),
+            name: AVCaptureSession.runtimeErrorNotification, object: session
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func sessionWasInterrupted(_ notification: Notification) {
+        let reason = (notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int)
+            .flatMap(AVCaptureSession.InterruptionReason.init)
+        print("カメラセッションが中断されました: \(String(describing: reason))")
+    }
+
+    /// 中断が終わっても `AVCaptureSession` が自動で再開するとは限らない。
+    /// 本来動いているはずだったときだけ、明示的に再試行する。
+    @objc private func sessionInterruptionEnded(_ notification: Notification) {
+        guard shouldBeRunning else { return }
+        queue.async { [weak self] in self?.session.startRunning() }
+    }
+
+    /// `.mediaServicesWereReset` はセッションの再構成が必要になる。
+    /// 入力/出力を組み直したうえで、動いているべきなら再開する。
+    @objc private func sessionRuntimeError(_ notification: Notification) {
+        guard let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError else { return }
+        print("カメラセッションで実行時エラー: \(error)")
+        guard error.code == .mediaServicesWereReset, shouldBeRunning else { return }
+        queue.async { [weak self] in self?.session.startRunning() }
+    }
+
     // MARK: - 権限
 
     func requestAccess() async -> Bool {
@@ -203,10 +255,12 @@ final class CameraCapture: NSObject, ObservableObject {
     /// 戻らなくなる。start/stop 自体は Apple のドキュメント通り冗長に呼んでも
     /// 安全なので、判定なしで必ずキューに積み、シリアルキューの実行順に委ねる。
     func start() {
+        shouldBeRunning = true
         queue.async { [weak self] in self?.session.startRunning() }
     }
 
     func stop() {
+        shouldBeRunning = false
         queue.async { [weak self] in self?.session.stopRunning() }
     }
 
