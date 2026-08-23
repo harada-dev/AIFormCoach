@@ -195,13 +195,18 @@ final class CameraCapture: NSObject, ObservableObject {
 
     // MARK: - 開始 / 停止
 
+    /// `session.isRunning` をメインスレッドで読んでから非同期でキューに投げる
+    /// 形は使わない。start/stop を短時間に連続で呼ぶと(ホームへ戻ってすぐ
+    /// 戻る操作で起きる)、先の stop がキュー上でまだ実行されていないうちに
+    /// あとの start が「もう動いている」と誤認してエンキューされず消える。
+    /// 結果、遅れて実行された stop だけが効いてカメラが停止したまま
+    /// 戻らなくなる。start/stop 自体は Apple のドキュメント通り冗長に呼んでも
+    /// 安全なので、判定なしで必ずキューに積み、シリアルキューの実行順に委ねる。
     func start() {
-        guard !session.isRunning else { return }
         queue.async { [weak self] in self?.session.startRunning() }
     }
 
     func stop() {
-        guard session.isRunning else { return }
         queue.async { [weak self] in self?.session.stopRunning() }
     }
 
