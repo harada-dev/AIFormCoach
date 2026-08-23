@@ -19,7 +19,13 @@ struct DiagnosisView: View {
                 } else if diagnosis.judged.isEmpty {
                     // 判定にかけた指標が1つも無いときに allClearNotice を出すと
                     // 「すべて基準を満たしていた」と嘘をつくことになる。
-                    notJudgedNotice
+                    // **この分岐そのものは必ず残すこと。**
+                    //
+                    // ただし画面の先頭に置くのは「撮り直してください」という
+                    // 指示だけにする。「判定していません」は断りであって指示では
+                    // ないので、最下部の notJudgedFootnote へ回す。指示より先に
+                    // 断りを読ませると、その後の指示が読まれない。
+                    if diagnosis.items.isEmpty { notMeasuredNotice }
                 } else if diagnosis.priorities.isEmpty {
                     allClearNotice
                 } else {
@@ -34,6 +40,14 @@ struct DiagnosisView: View {
                 if !diagnosis.unmeasured.isEmpty { unmeasuredSection }
 
                 qualitySection
+
+                // 断りは全部読み終えたあと。位置と字の大きさで「本文ではない」
+                // ことを示す。
+                if diagnosis.quality.canPrescribe,
+                   !diagnosis.items.isEmpty,
+                   diagnosis.judged.isEmpty {
+                    notJudgedFootnote
+                }
             }
             .padding(20)
         }
@@ -219,24 +233,40 @@ struct DiagnosisView: View {
         .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
     }
 
-    /// 合否の判定にかけた指標が1つも無かったとき。
+    /// 指標を1つも測れなかったとき。
     ///
-    /// 「測れたが判定していない」と「そもそも測れていない」は原因が別なので
-    /// 文言を分ける。基準値が未確定である旨は referenceOnlySection 側に
-    /// 書いてあるので、ここでは繰り返さずそちらを見るよう促すだけにする。
-    private var notJudgedNotice: some View {
+    /// 中身は「撮り直してください」という**指示**で、しかもこの画面で他に
+    /// できることが無い状態なので、先頭に置いたまま目立たせる。
+    private var notMeasuredNotice: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("今回は合否の判定をしていません", systemImage: "info.circle.fill")
+            Label("撮り直してください", systemImage: "info.circle.fill")
                 .font(.headline)
-            Text(
-                diagnosis.items.isEmpty
-                    ? "指標を1つも測れなかったため、判定できませんでした。下の「測れなかった指標」を確認して、蹴る方向に対して真横から、全身が映るように撮り直してください。"
-                    : "基準値が確定している指標が無いため、良い・悪いの判定は行っていません。測れた数値は下の「参考の数値と共通のポイント」にまとめています。"
-            )
-            .font(.subheadline)
+            Text("指標を1つも測れなかったため、判定できませんでした。下の「測れなかった指標」を確認して、蹴る方向に対して真横から、全身が映るように撮り直してください。")
+                .font(.subheadline)
         }
         .padding(16)
         .background(.blue.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    /// 測れてはいるが、基準値が確定している指標が無くて合否を出せないとき。
+    ///
+    /// **画面の最下部に置くこと。**内容は断りであって指示ではない。先頭に
+    /// 見出し付きの箱で置くと、練習の指示より先に「判定していません」を
+    /// 読ませることになり、そのあとの指示が読まれなくなる。読み手は小学生。
+    ///
+    /// 各指標についての同じ断りは referenceOnlySection が計測値のすぐ下で
+    /// 述べているので、ここでは画面全体としての断りだけにとどめる。
+    private var notJudgedFootnote: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Divider()
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "info.circle")
+                    .font(.caption2)
+                Text("基準値が確定している指標が無いため、この画面では良い・悪いの判定を行っていません。上に出している数値は参考として表示しているものです。")
+                    .font(.caption2)
+            }
+            .foregroundStyle(.secondary)
+        }
     }
 
     private var allClearNotice: some View {
@@ -310,9 +340,8 @@ struct DiagnosisView: View {
                             .font(.subheadline.bold())
                             .monospacedDigit()
                     }
-                    Text("この指標は基準値が未確定のため、良い・悪いの判定はしていません。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    // 並び順は 計測値 → 練習 → 断り → 出典 で固定する。
+                    // 断りを練習より上に置くと、練習が読まれない。
                     if let note = item.metric.coachingNote {
                         VStack(alignment: .leading, spacing: 6) {
                             Label("みんなに共通のポイント", systemImage: "lightbulb")
@@ -325,6 +354,9 @@ struct DiagnosisView: View {
                         .padding(12)
                         .background(.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
                     }
+                    Text("この指標は基準値が未確定のため、良い・悪いの判定はしていません。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     provenance(item.metric)
                 }
                 .padding(14)
