@@ -8,6 +8,8 @@ import SwiftUI
 struct DiagnosisView: View {
 
     let diagnosis: DiagnosisEngine.Diagnosis
+    /// 運動連鎖の解析（SwingAnalysis）に使う。診断そのものには使わない。
+    let sequence: PoseSequence
 
     var body: some View {
         ScrollView {
@@ -32,6 +34,10 @@ struct DiagnosisView: View {
                 if !diagnosis.suppressed.isEmpty { suppressedSection }
                 if !diagnosis.referenceOnly.isEmpty { referenceOnlySection }
                 if !diagnosis.unmeasured.isEmpty { unmeasuredSection }
+
+                if let swing = try? SwingAnalysis.analyze(sequence, side: diagnosis.side) {
+                    SwingChainSection(result: swing)
+                }
 
                 qualitySection
             }
