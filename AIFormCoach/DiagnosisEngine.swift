@@ -119,7 +119,7 @@ enum DiagnosisEngine {
         guard sequence.frames.count >= 5 else { throw DiagnosisError.tooFewFrames }
         guard sequence.worldCoverage > 0.5 else { throw DiagnosisError.noWorldCoordinates }
 
-        guard let backswing = deepestKneeFlexion(sequence, side: side) else {
+        guard let backswing = JointAngles.deepestFlexionIndex(in: sequence, side: side) else {
             throw DiagnosisError.keyFrameNotFound
         }
 
@@ -156,32 +156,6 @@ enum DiagnosisEngine {
             quality: quality,
             unmeasured: unmeasured
         )
-    }
-
-    // MARK: - 局面の特定
-
-    /// 膝角が最小(最も深く曲がった)フレーム。バックスイング最深点。
-    ///
-    /// 膝角を使う理由:長い骨から計算するため推定が安定しており、
-    /// 実測で滑らかに単調変化した(1フレーム変化の中央値0.2°)。
-    /// つま先速度は微分でノイズが増幅されるため局面の特定に使えない。
-    private static func deepestKneeFlexion(
-        _ sequence: PoseSequence,
-        side: JointAngles.Side
-    ) -> Int? {
-        var best: (index: Int, degrees: Double)?
-
-        for (index, frame) in sequence.frames.enumerated() {
-            guard let m = JointAngles.kneeFlexion(frame, side: side),
-                  m.space == .world,
-                  m.confidence >= 0.5
-            else { continue }
-
-            if best == nil || m.degrees < best!.degrees {
-                best = (index, m.degrees)
-            }
-        }
-        return best?.index
     }
 
     // MARK: - 測定
@@ -258,8 +232,16 @@ enum DiagnosisEngine {
 
         // 画像座標での計測値は撮影角度に依存するため基準値と比較できない。
         guard let m = result, m.space == .world, m.confidence >= 0.5 else { return nil }
+        // 規約が一致しない指標は基準値と比較してはならない。
+        // 屈曲角の基準値に内角の実測を突合すると、約20°ずれた診断になる。
+        guard m.convention == metric.convention else { return nil }
         return m.degrees
     }
+
+    /// この値以下の逸脱は処方しない。
+    /// 測定の再現性（SD 3.1〜7.6°）の範囲内では、指摘しても意味がないため。
+    /// PRD G6「同一条件での再現ばらつき ±5°以内」に対応する。
+    private static let minimumMeaningfulDeviation = 5.0
 
     private static func makeItem(
         metric: ReferenceDatabase.Metric,
@@ -275,7 +257,9 @@ enum DiagnosisEngine {
             )
         }
 
-        let deviation = tolerance.deviation(of: sample.value)
+        let rawDeviation = tolerance.deviation(of: sample.value)
+        // 誤差の範囲内なら「範囲内」として扱う
+        let deviation = abs(rawDeviation) < minimumMeaningfulDeviation ? 0 : rawDeviation
         let correction: ReferenceDatabase.Correction? =
             deviation > 0 ? metric.whenAbove : (deviation < 0 ? metric.whenBelow : nil)
 
