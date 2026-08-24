@@ -33,9 +33,6 @@ enum SwingAnalysis {
     /// 角速度を求める中心差分の半幅。隣接フレーム差より雑音が小さい。
     static let velocityHalfWindowMs = 25
 
-    /// 解剖学的にありえない膝角を弾く。実測で膝3°・41°という破綻値を観測した。
-    static let plausibleKneeRange: ClosedRange<Double> = 40...180
-
     // MARK: - 結果の型
 
     struct AngularPeak: Sendable {
@@ -141,21 +138,19 @@ enum SwingAnalysis {
 
         let times = frames.map(\.timestampMs)
 
-        // ── 膝内角の時系列
+        // ── 膝内角の時系列（角速度の計算にのみ使う。局面検出には使わない）
         let kneeAngles: [Double?] = frames.map { frame in
-            guard let m = JointAngles.kneeFlexion(frame, side: side), m.space == .world else {
+            guard let m = JointAngles.kneeInteriorAngle(frame, side: side), m.space == .world else {
                 return nil
             }
             return m.degrees
         }
 
-        // ── バックスイング最深（解剖学的にありえない値は除外）
-        let candidates = kneeAngles.indices.filter {
-            guard let a = kneeAngles[$0] else { return false }
-            return plausibleKneeRange.contains(a)
+        // ── バックスイング最深（屈曲角が最大のフレーム）
+        guard let backswing = JointAngles.deepestFlexionIndex(in: sequence, side: side) else {
+            throw AnalysisError.noPlausibleBackswing
         }
-        guard let backswing = candidates.min(by: { (kneeAngles[$0] ?? 999) < (kneeAngles[$1] ?? 999) }),
-              let backswingAngle = kneeAngles[backswing]
+        guard let backswingAngle = JointAngles.kneeFlexion(frames[backswing], side: side)?.degrees
         else { throw AnalysisError.noPlausibleBackswing }
 
         // ── 角速度の3系列
