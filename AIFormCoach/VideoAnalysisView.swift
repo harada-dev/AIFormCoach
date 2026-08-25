@@ -38,6 +38,7 @@ struct VideoAnalysisView: View {
     @State private var isExporting = false
     @State private var errorMessage: String?
     @State private var task: Task<Void, Never>?
+    @State private var kickingSide: JointAngles.Side = .right
 
     private enum Phase {
         case idle
@@ -182,7 +183,24 @@ struct VideoAnalysisView: View {
             VStack(spacing: 20) {
                 diagnostics(result)
 
+                Picker("蹴り足", selection: $kickingSide) {
+                    Text("右足で蹴った").tag(JointAngles.Side.right)
+                    Text("左足で蹴った").tag(JointAngles.Side.left)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+
                 SkeletonPlayer(sequence: result.sequence)
+
+                NavigationLink {
+                    diagnosisDestination(for: result.sequence)
+                } label: {
+                    Label("診断を見る", systemImage: "stethoscope")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .padding(.horizontal)
 
                 Button {
                     export(result.sequence)
@@ -211,6 +229,23 @@ struct VideoAnalysisView: View {
                     ProgressView().controlSize(.large)
                 }
             }
+        }
+    }
+
+    /// 診断を実行して画面を返す。失敗した理由を隠さず表示する。
+    @ViewBuilder
+    private func diagnosisDestination(for sequence: PoseSequence) -> some View {
+        let outcome = Result { try DiagnosisEngine.diagnose(sequence, side: kickingSide) }
+
+        switch outcome {
+        case .success(let diagnosis):
+            DiagnosisView(diagnosis: diagnosis, sequence: sequence)
+        case .failure(let error):
+            ContentUnavailableView(
+                "診断できませんでした",
+                systemImage: "exclamationmark.triangle",
+                description: Text(error.localizedDescription)
+            )
         }
     }
 
@@ -292,6 +327,10 @@ struct VideoAnalysisView: View {
                     }
                 )
 
+                if let detected = result.kickingSide { kickingSide = detected }
+                // ライブ収録と同じく、解析できた時点で保存する。標準カメラで
+                // 撮った自分の動画を取り込むケースが主眼なので .recorded とする。
+                try? SkeletonLibrary.shared.save(result.sequence, source: .recorded)
                 phase = .done(result)
             } catch is CancellationError {
                 phase = .idle

@@ -40,6 +40,8 @@ final class CaptureViewModel: ObservableObject {
         case reviewing
         /// 「動画から骨格をつくる」シートを表示中。
         case videoAnalysisSheet
+        /// 「保存した記録」一覧シートを表示中。
+        case library
         /// アプリが前面にいない。
         case background
     }
@@ -231,7 +233,9 @@ final class CaptureViewModel: ObservableObject {
             let frames = camera.isMirrored
                 ? result.sequence.frames.map { $0.flippingHorizontally() }
                 : result.sequence.frames
-            recordedSequence = PoseSequence(frames: frames, engine: result.sequence.engine)
+            let sequence = PoseSequence(frames: frames, engine: result.sequence.engine)
+            recordedSequence = sequence
+            try? SkeletonLibrary.shared.save(sequence, source: .recorded)
             // 停止理由を .analyzing から .reviewing へ引き継ぐ。呼び出し元の
             // defer で .analyzing が外れるより先にここを通るので、集合は空にならない。
             suspend(.reviewing)
@@ -329,7 +333,10 @@ final class CaptureViewModel: ObservableObject {
 
     func open(url: URL) {
         do {
-            recordedSequence = try SkeletonDocument.read(from: url)
+            let sequence = try SkeletonDocument.read(from: url)
+            recordedSequence = sequence
+            // 友だち・コーチから受け取った骨格は自分の記録と出自を分けて保存する。
+            try? SkeletonLibrary.shared.save(sequence, source: .imported)
             // 収録経由と同じく、確認シートを閉じるまで撮影を止める。
             suspend(.reviewing)
         } catch {

@@ -82,7 +82,7 @@ final class CameraCapture: NSObject, ObservableObject {
     /// 本来動いているはずだったときだけ、明示的に再試行する。
     @objc private func sessionInterruptionEnded(_ notification: Notification) {
         guard shouldBeRunning else { return }
-        queue.async { [weak self] in self?.session.startRunning() }
+        queue.async { [weak self] in self?.attemptStart(retriesLeft: 3) }
     }
 
     /// `.mediaServicesWereReset` はセッションの再構成が必要になる。
@@ -91,7 +91,7 @@ final class CameraCapture: NSObject, ObservableObject {
         guard let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError else { return }
         print("カメラセッションで実行時エラー: \(error)")
         guard error.code == .mediaServicesWereReset, shouldBeRunning else { return }
-        queue.async { [weak self] in self?.session.startRunning() }
+        queue.async { [weak self] in self?.attemptStart(retriesLeft: 3) }
     }
 
     // MARK: - 権限
@@ -256,7 +256,22 @@ final class CameraCapture: NSObject, ObservableObject {
     /// 安全なので、判定なしで必ずキューに積み、シリアルキューの実行順に委ねる。
     func start() {
         shouldBeRunning = true
-        queue.async { [weak self] in self?.session.startRunning() }
+        queue.async { [weak self] in self?.attemptStart(retriesLeft: 3) }
+    }
+
+    /// `PhotosPicker` や共有シートなど、Filesアプリ以外のシステムUIでも
+    /// `AVCaptureSession` の中断が起きることがある。`startRunning()` は
+    /// 中断がまだ内部的に解消していないタイミングだと何も起こさずに
+    /// 戻ることがあるため、`isRunning` を確認して失敗していれば少し待って
+    /// 再試行する。`shouldBeRunning` が false になっていれば(その間に
+    /// stop() が呼ばれていれば)何もしない。
+    private func attemptStart(retriesLeft: Int) {
+        guard shouldBeRunning else { return }
+        session.startRunning()
+        guard !session.isRunning, retriesLeft > 0 else { return }
+        queue.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.attemptStart(retriesLeft: retriesLeft - 1)
+        }
     }
 
     func stop() {
