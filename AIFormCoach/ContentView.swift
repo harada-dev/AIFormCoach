@@ -20,6 +20,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showingPlayer = false
     @State private var showingVideoAnalysis = false
+    @State private var showingLibrary = false
 
     var body: some View {
         ZStack {
@@ -219,6 +220,24 @@ struct ContentView: View {
                 VideoAnalysisView()
                     .onAppear { model.suspend(.videoAnalysisSheet) }
                     .onDisappear { model.resume(.videoAnalysisSheet) }
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            Button {
+                showingLibrary = true
+            } label: {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+                    .padding(12)
+                    .background(.black.opacity(0.55), in: Circle())
+            }
+            .disabled(model.isRecording)
+            .accessibilityLabel("保存した記録")
+            .sheet(isPresented: $showingLibrary) {
+                SkeletonLibraryView()
+                    .onAppear { model.suspend(.library) }
+                    .onDisappear { model.resume(.library) }
             }
         }
     }
