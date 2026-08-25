@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var showingPlayer = false
     @State private var showingVideoAnalysis = false
     @State private var showingLibrary = false
+    @State private var kickingSide: JointAngles.Side = .right
 
     var body: some View {
         ZStack {
@@ -103,30 +104,76 @@ struct ContentView: View {
     private var reviewSheet: some View {
         if let sequence = model.recordedSequence {
             NavigationStack {
-                SkeletonPlayer(sequence: sequence)
-                    .navigationTitle("骨格を確認")
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("閉じる") { showingPlayer = false }
+                ScrollView {
+                    VStack(spacing: 16) {
+                        Picker("蹴り足", selection: $kickingSide) {
+                            Text("右足で蹴った").tag(JointAngles.Side.right)
+                            Text("左足で蹴った").tag(JointAngles.Side.left)
                         }
-                        ToolbarItem(placement: .bottomBar) {
-                            Button {
-                                Task { await model.export() }
-                            } label: {
-                                Label("共有する", systemImage: "square.and.arrow.up")
-                            }
-                            .disabled(model.isExporting)
+                        .pickerStyle(.segmented)
+                        .padding(.horizontal)
+
+                        SkeletonPlayer(sequence: sequence)
+
+                        NavigationLink {
+                            diagnosisDestination(for: sequence)
+                        } label: {
+                            Label("診断を見る", systemImage: "stethoscope")
+                                .frame(maxWidth: .infinity)
                         }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .padding(.horizontal)
+
+                        Text("この記録は自動で保存されました。「保存した記録」からいつでも見返せます。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
                     }
-                    .overlay {
-                        if model.isExporting {
-                            ExportingOverlay()
+                    .padding(.vertical)
+                }
+                .navigationTitle("骨格を確認")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("閉じる") { showingPlayer = false }
+                    }
+                    ToolbarItem(placement: .bottomBar) {
+                        Button {
+                            Task { await model.export() }
+                        } label: {
+                            Label("共有する", systemImage: "square.and.arrow.up")
                         }
+                        .disabled(model.isExporting)
                     }
-                    .sheet(item: $model.exportURL) { url in
-                        ShareSheet(items: [url])
+                }
+                .overlay {
+                    if model.isExporting {
+                        ExportingOverlay()
                     }
+                }
+                .sheet(item: $model.exportURL) { url in
+                    ShareSheet(items: [url])
+                }
             }
+        }
+    }
+
+    /// 診断を実行して画面を返す。失敗した理由を隠さず表示する。
+    @ViewBuilder
+    private func diagnosisDestination(for sequence: PoseSequence) -> some View {
+        let outcome = Result { try DiagnosisEngine.diagnose(sequence, side: kickingSide) }
+
+        switch outcome {
+        case .success(let diagnosis):
+            DiagnosisView(diagnosis: diagnosis, sequence: sequence)
+        case .failure(let error):
+            ContentUnavailableView(
+                "診断できませんでした",
+                systemImage: "exclamationmark.triangle",
+                description: Text(error.localizedDescription)
+            )
         }
     }
 
@@ -185,6 +232,7 @@ struct ContentView: View {
                 }
                 .animation(.snappy, value: model.isRecording)
             }
+            .disabled(model.isSuspended)
             .accessibilityLabel(model.isRecording ? "収録を止める" : "5秒間収録する")
 
             Spacer()
@@ -202,45 +250,44 @@ struct ContentView: View {
             .disabled(model.isRecording)
             .accessibilityLabel(model.isFrontCamera ? "背面カメラに切り替える" : "前面カメラに切り替える")
         }
-        .overlay(alignment: .leading) {
-            // 2つ並べて置く。overlay を2つ重ねて別々に .leading / .bottomLeading を
-            // 指定すると、このバー自体の高さが小さいため実質同じ位置に重なる。
-            HStack(spacing: 12) {
-                Button {
-                    showingLibrary = true
-                } label: {
-                    Image(systemName: "square.stack.3d.up")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                        .padding(14)
-                        .background(.black.opacity(0.55), in: Circle())
-                }
-                .disabled(model.isRecording)
-                .accessibilityLabel("保存した記録")
-                .sheet(isPresented: $showingLibrary) {
-                    SkeletonLibraryView()
-                        .onAppear { model.suspend(.library) }
-                        .onDisappear { model.resume(.library) }
-                }
-
-                Button {
-                    showingVideoAnalysis = true
-                } label: {
-                    Image(systemName: "photo.badge.plus")
-                        .font(.title2)
-                        .foregroundStyle(.white)
-                        .padding(14)
-                        .background(.black.opacity(0.55), in: Circle())
-                }
-                .disabled(model.isRecording)
-                .accessibilityLabel("動画から骨格をつくる")
-                // このシートはボタン自身に付ける。ContentView 本体に .sheet を
-                // 2つ並べると、2枚目の提示が失敗して即座に閉じてしまう。
-                .sheet(isPresented: $showingVideoAnalysis) {
-                    VideoAnalysisView()
-                        .onAppear { model.suspend(.videoAnalysisSheet) }
-                        .onDisappear { model.resume(.videoAnalysisSheet) }
-                }
+        // 左上：動画から取り込む。左下の「保存した記録」と縦位置を分けて重なりを避ける。
+        .overlay(alignment: .topLeading) {
+            Button {
+                showingVideoAnalysis = true
+            } label: {
+                Image(systemName: "photo.badge.plus")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+                    .padding(14)
+                    .background(.black.opacity(0.55), in: Circle())
+            }
+            .disabled(model.isRecording)
+            .accessibilityLabel("動画から骨格をつくる")
+            // このシートはボタン自身に付ける。ContentView 本体に .sheet を
+            // 2つ並べると、2枚目の提示が失敗して即座に閉じてしまう。
+            .sheet(isPresented: $showingVideoAnalysis) {
+                VideoAnalysisView()
+                    .onAppear { model.suspend(.videoAnalysisSheet) }
+                    .onDisappear { model.resume(.videoAnalysisSheet) }
+            }
+        }
+        // 左下：保存した記録
+        .overlay(alignment: .bottomLeading) {
+            Button {
+                showingLibrary = true
+            } label: {
+                Image(systemName: "square.stack.3d.up")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+                    .padding(14)
+                    .background(.black.opacity(0.55), in: Circle())
+            }
+            .disabled(model.isRecording)
+            .accessibilityLabel("保存した記録")
+            .sheet(isPresented: $showingLibrary) {
+                SkeletonLibraryView()
+                    .onAppear { model.suspend(.library) }
+                    .onDisappear { model.resume(.library) }
             }
         }
     }
