@@ -250,44 +250,45 @@ struct ContentView: View {
             .disabled(model.isRecording)
             .accessibilityLabel(model.isFrontCamera ? "背面カメラに切り替える" : "前面カメラに切り替える")
         }
-        // 左上：動画から取り込む。左下の「保存した記録」と縦位置を分けて重なりを避ける。
-        .overlay(alignment: .topLeading) {
-            Button {
-                showingVideoAnalysis = true
-            } label: {
-                Image(systemName: "photo.badge.plus")
-                    .font(.title2)
-                    .foregroundStyle(.white)
-                    .padding(14)
-                    .background(.black.opacity(0.55), in: Circle())
-            }
-            .disabled(model.isRecording)
-            .accessibilityLabel("動画から骨格をつくる")
-            // このシートはボタン自身に付ける。ContentView 本体に .sheet を
-            // 2つ並べると、2枚目の提示が失敗して即座に閉じてしまう。
-            .sheet(isPresented: $showingVideoAnalysis) {
-                VideoAnalysisView()
-                    .onAppear { model.suspend(.videoAnalysisSheet) }
-                    .onDisappear { model.resume(.videoAnalysisSheet) }
-            }
-        }
-        // 左下：保存した記録
-        .overlay(alignment: .bottomLeading) {
-            Button {
-                showingLibrary = true
-            } label: {
-                Image(systemName: "square.stack.3d.up")
-                    .font(.title2)
-                    .foregroundStyle(.white)
-                    .padding(14)
-                    .background(.black.opacity(0.55), in: Circle())
-            }
-            .disabled(model.isRecording)
-            .accessibilityLabel("保存した記録")
-            .sheet(isPresented: $showingLibrary) {
-                SkeletonLibraryView()
-                    .onAppear { model.suspend(.library) }
-                    .onDisappear { model.resume(.library) }
+        .overlay(alignment: .leading) {
+            // 2つ並べて置く。overlay を2つ重ねて別々に .leading / .bottomLeading を
+            // 指定すると、このバー自体の高さが小さいため実質同じ位置に重なる。
+            HStack(spacing: 12) {
+                Button {
+                    showingLibrary = true
+                } label: {
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .padding(14)
+                        .background(.black.opacity(0.55), in: Circle())
+                }
+                .disabled(model.isRecording)
+                .accessibilityLabel("保存した記録")
+                .sheet(isPresented: $showingLibrary) {
+                    SkeletonLibraryView()
+                        .onAppear { model.suspend(.library) }
+                        .onDisappear { model.resume(.library) }
+                }
+
+                Button {
+                    showingVideoAnalysis = true
+                } label: {
+                    Image(systemName: "photo.badge.plus")
+                        .font(.title2)
+                        .foregroundStyle(.white)
+                        .padding(14)
+                        .background(.black.opacity(0.55), in: Circle())
+                }
+                .disabled(model.isRecording)
+                .accessibilityLabel("動画から骨格をつくる")
+                // このシートはボタン自身に付ける。ContentView 本体に .sheet を
+                // 2つ並べると、2枚目の提示が失敗して即座に閉じてしまう。
+                .sheet(isPresented: $showingVideoAnalysis) {
+                    VideoAnalysisView()
+                        .onAppear { model.suspend(.videoAnalysisSheet) }
+                        .onDisappear { model.resume(.videoAnalysisSheet) }
+                }
             }
         }
     }
