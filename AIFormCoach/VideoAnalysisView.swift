@@ -328,6 +328,9 @@ struct VideoAnalysisView: View {
                 )
 
                 if let detected = result.kickingSide { kickingSide = detected }
+                // ライブ収録と同じく、解析できた時点で保存する。標準カメラで
+                // 撮った自分の動画を取り込むケースが主眼なので .recorded とする。
+                try? SkeletonLibrary.shared.save(result.sequence, source: .recorded)
                 phase = .done(result)
             } catch is CancellationError {
                 phase = .idle
