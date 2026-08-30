@@ -20,8 +20,8 @@ final class SkeletonLibrary: ObservableObject {
 
     static let shared = SkeletonLibrary()
 
-    static let maxRecents = 20
-    static let maxFavorites = 5
+    static var maxRecents: Int { SkeletonLimits.maxRecents }
+    static var maxFavorites: Int { SkeletonLimits.maxFavorites }
 
     @Published private(set) var entries: [Entry] = []
 
@@ -103,7 +103,7 @@ final class SkeletonLibrary: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .favoritesFull:
-                return "お気に入りは\(SkeletonLibrary.maxFavorites)件までです。どれかを解除してから追加してください。"
+                return "お気に入りは\(SkeletonLimits.maxFavorites)件までです。どれかを解除してから追加してください。"
             case .fileMissing:
                 return "ファイルが見つかりません。削除された可能性があります。"
             case .saveFailed(let message):
@@ -248,10 +248,20 @@ final class SkeletonLibrary: ObservableObject {
 
     // MARK: - 共有
 
-    /// 共有シートに渡すファイル。保存済みのものをそのまま使う。
+    /// 共有用に、日時が分かるファイル名でコピーを作る。
+    /// UUID のままだと、どの撮影か照合できない。
     func shareURL(for entry: Entry) -> URL? {
-        let url = fileURL(for: entry)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        let source = fileURL(for: entry)
+        guard FileManager.default.fileExists(atPath: source.path) else { return nil }
+
+        let stamp = ISO8601DateFormatter().string(from: entry.recordedAt)
+            .replacingOccurrences(of: ":", with: "-")
+        let name = "skeleton_\(stamp).\(SkeletonDocument.fileExtension)"
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+
+        try? FileManager.default.removeItem(at: destination)
+        try? FileManager.default.copyItem(at: source, to: destination)
+        return destination
     }
 
     // MARK: - 索引の入出力
@@ -276,4 +286,15 @@ final class SkeletonLibrary: ObservableObject {
         guard let data = try? encoder.encode(entries) else { return }
         try? data.write(to: indexURL, options: .atomic)
     }
+}
+
+/// 保存の上限。`LibraryError`(nonisolated な文脈)から参照するため、
+/// `@MainActor` な `SkeletonLibrary` の外に置く。
+///
+/// このプロジェクトは `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor` が
+/// 設定されているため、クラスの外に出すだけでは不十分で、
+/// 明示的に `nonisolated` を付けないと同じ警告が残る。
+nonisolated enum SkeletonLimits {
+    static let maxRecents = 20
+    static let maxFavorites = 5
 }

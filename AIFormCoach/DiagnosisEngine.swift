@@ -49,9 +49,17 @@ enum DiagnosisEngine {
         let footShankRatio: Double
         /// 真横から撮れているか。足部を使う指標の可否を決める。
         let isSideView: Bool
+        /// 骨長の一貫性から破綻と判定されたフレームの割合。
+        let brokenRatio: Double
+        /// 計測窓内で元データが健全だった割合。
+        let windowHealthyRatio: Double
         let warnings: [String]
 
-        var canPrescribe: Bool { hasWorldCoordinates && confidence >= 0.6 }
+        var canPrescribe: Bool {
+            hasWorldCoordinates
+                && confidence >= 0.6
+                && windowHealthyRatio >= PoseIntegrity.reliablePrescriptionRatio
+        }
     }
 
     struct Diagnosis: Sendable {
@@ -91,6 +99,7 @@ enum DiagnosisEngine {
         case tooFewFrames
         case noWorldCoordinates
         case keyFrameNotFound
+        case unreliableMeasurement(brokenRatio: Double, windowHealthyRatio: Double)
 
         var errorDescription: String? {
             switch self {
@@ -100,6 +109,13 @@ enum DiagnosisEngine {
                 return "3D座標がないため診断できません。角度定義v2で撮影したデータが必要です。"
             case .keyFrameNotFound:
                 return "蹴り足の動きを検出できませんでした。全身が映るように撮り直してください。"
+            case .unreliableMeasurement(let broken, let healthy):
+                let guidance = PoseIntegrity.retryGuidance(
+                    brokenRatio: broken, windowHealthyRatio: healthy
+                )
+                return ([
+                    "うまく測れませんでした(骨格の推定が不安定な区間が\(Int(broken * 100))%ありました)。"
+                ] + guidance).joined(separator: "\n・")
             }
         }
     }
@@ -119,11 +135,26 @@ enum DiagnosisEngine {
         guard sequence.frames.count >= 5 else { throw DiagnosisError.tooFewFrames }
         guard sequence.worldCoverage > 0.5 else { throw DiagnosisError.noWorldCoordinates }
 
+        // 骨長の一貫性で破綻フレームを検出し、可能なら補間する。
+        // 実測で、不通過6本のうち4本がこれで救済された。
+        let integrity = PoseIntegrity.repair(sequence)
+        let sequence = integrity.repaired
+
         guard let backswing = JointAngles.deepestFlexionIndex(in: sequence, side: side) else {
             throw DiagnosisError.keyFrameNotFound
         }
 
-        let quality = assessQuality(sequence, side: side, backswing: backswing)
+        // 計測窓内に信用できるフレームが足りなければ診断しない。
+        let windowHealthy = integrity.healthyRatio(around: backswing, windowMs: 150)
+        print("診断: \(sequence.recordedAt) / 破綻率 \(Int(integrity.brokenRatio * 100))% / 窓内健全 \(Int(windowHealthy * 100))%")
+        guard windowHealthy >= PoseIntegrity.minimumWindowHealthyRatio else {
+            throw DiagnosisError.unreliableMeasurement(
+                brokenRatio: integrity.brokenRatio,
+                windowHealthyRatio: windowHealthy
+            )
+        }
+
+        let quality = assessQuality(sequence, side: side, backswing: backswing, integrity: integrity)
         let backswingFrame = sequence.frames[backswing]
 
         var items: [Item] = []
@@ -281,9 +312,14 @@ enum DiagnosisEngine {
     private static func assessQuality(
         _ sequence: PoseSequence,
         side: JointAngles.Side,
-        backswing: Int
+        backswing: Int,
+        integrity: PoseIntegrity.Result
     ) -> Quality {
         var warnings: [String] = []
+
+        if integrity.brokenRatio > 0.1 {
+            warnings.append("骨格の推定が不安定な区間が\(Int(integrity.brokenRatio * 100))%ありました。前後のフレームから補間して計測しています。")
+        }
 
         let hasWorld = sequence.worldCoverage > 0.9
         if !hasWorld {
@@ -318,6 +354,8 @@ enum DiagnosisEngine {
             maxKneeDeltaPerFrame: delta,
             footShankRatio: ratio,
             isSideView: isSideView,
+            brokenRatio: integrity.brokenRatio,
+            windowHealthyRatio: integrity.healthyRatio(around: backswing, windowMs: 150),
             warnings: warnings
         )
     }
