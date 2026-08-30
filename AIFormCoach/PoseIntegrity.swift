@@ -21,9 +21,13 @@ enum PoseIntegrity {
     /// 実測では通過クリップで破綻率5〜16%、不通過で8〜27%だった。
     static let lengthTolerance = 0.15
 
-    /// 計測窓内の健全フレームがこの割合を下回ると、診断を出さない。
-    /// 実測で 15% 以上のクリップは補間で救済できたが、0% は不可だった。
-    static let minimumWindowHealthyRatio = 0.25
+    /// 計測窓内の健全フレームがこの割合を下回ると、診断自体を行わない。
+    /// 実測で 11% のクリップでも補間後に妥当な値が得られたため、
+    /// 完全に止めるのは情報がほぼ無い場合に限る。
+    static let minimumWindowHealthyRatio = 0.10
+
+    /// この割合を下回ると、計測値は出すが処方は控える。
+    static let reliablePrescriptionRatio = 0.25
 
     /// 一貫性を確認する骨。長さが安定している部位のみを使う
     /// （足部は変動係数16〜29%のため対象外）。

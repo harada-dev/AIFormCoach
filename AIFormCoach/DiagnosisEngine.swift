@@ -55,7 +55,11 @@ enum DiagnosisEngine {
         let windowHealthyRatio: Double
         let warnings: [String]
 
-        var canPrescribe: Bool { hasWorldCoordinates && confidence >= 0.6 }
+        var canPrescribe: Bool {
+            hasWorldCoordinates
+                && confidence >= 0.6
+                && windowHealthyRatio >= PoseIntegrity.reliablePrescriptionRatio
+        }
     }
 
     struct Diagnosis: Sendable {
@@ -142,6 +146,7 @@ enum DiagnosisEngine {
 
         // 計測窓内に信用できるフレームが足りなければ診断しない。
         let windowHealthy = integrity.healthyRatio(around: backswing, windowMs: 150)
+        print("診断: \(sequence.recordedAt) / 破綻率 \(Int(integrity.brokenRatio * 100))% / 窓内健全 \(Int(windowHealthy * 100))%")
         guard windowHealthy >= PoseIntegrity.minimumWindowHealthyRatio else {
             throw DiagnosisError.unreliableMeasurement(
                 brokenRatio: integrity.brokenRatio,

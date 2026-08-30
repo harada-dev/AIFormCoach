@@ -235,7 +235,14 @@ final class CaptureViewModel: ObservableObject {
                 : result.sequence.frames
             let sequence = PoseSequence(frames: frames, engine: result.sequence.engine)
             recordedSequence = sequence
-            try? SkeletonLibrary.shared.save(sequence, source: .recorded)
+            // 保存に失敗しても診断そのものは進めたいので、外側の catch には
+            // 流さない。ただし失敗を握りつぶすと「撮ったのに残っていない」
+            // という形でしか表面化しないため、エラーは表示する。
+            do {
+                try SkeletonLibrary.shared.save(sequence, source: .recorded)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
             // 停止理由を .analyzing から .reviewing へ引き継ぐ。呼び出し元の
             // defer で .analyzing が外れるより先にここを通るので、集合は空にならない。
             suspend(.reviewing)
@@ -336,7 +343,12 @@ final class CaptureViewModel: ObservableObject {
             let sequence = try SkeletonDocument.read(from: url)
             recordedSequence = sequence
             // 友だち・コーチから受け取った骨格は自分の記録と出自を分けて保存する。
-            try? SkeletonLibrary.shared.save(sequence, source: .imported)
+            // 保存に失敗しても表示そのものは進めたいので、外側の catch には流さない。
+            do {
+                try SkeletonLibrary.shared.save(sequence, source: .imported)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
             // 収録経由と同じく、確認シートを閉じるまで撮影を止める。
             suspend(.reviewing)
         } catch {
