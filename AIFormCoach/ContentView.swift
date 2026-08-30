@@ -25,16 +25,22 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
+            // プレビューは取り外さず、常に階層に置いたままにする。
+            //
+            // AVCaptureVideoPreviewLayer をセッション稼働中にビュー階層から
+            // 破棄すると、セッションからの切り離しが完了するまでメインスレッドが
+            // ブロックされる。シートを開くたびに数秒固まる原因になっていた。
+            CameraPreview(session: model.camera.session)
+                .ignoresSafeArea()
+            
+            SkeletonOverlay(frame: model.latestFrame)
+                .ignoresSafeArea()
+            
+            // 停止中は黒で覆う。カメラ自体は suspend() で止めているため、
+            // シートの裏で姿勢トリガーが働くことはない。
             if model.isSuspended {
                 Color.black.ignoresSafeArea()
-            } else {
-                CameraPreview(session: model.camera.session)
-                    .ignoresSafeArea()
-
-                SkeletonOverlay(frame: model.latestFrame)
-                    .ignoresSafeArea()
             }
-
             // 収録中は画面の縁を赤く光らせる。数メートル離れても分かる。
             if model.isRecording {
                 RecordingBorder()
@@ -79,7 +85,10 @@ struct ContentView: View {
             // 解析完了からシート表示までの隙間でカメラが一瞬 ON に戻る。
             reviewSheet
         }
-        .alert("エラー", isPresented: .constant(model.errorMessage != nil)) {
+        .alert("エラー", isPresented: Binding(
+            get: { model.errorMessage != nil },
+            set: { if !$0 { model.errorMessage = nil } }
+        )) {
             Button("OK") { model.errorMessage = nil }
         } message: {
             Text(model.errorMessage ?? "")
@@ -116,7 +125,7 @@ struct ContentView: View {
                         SkeletonPlayer(sequence: sequence)
 
                         NavigationLink {
-                            diagnosisDestination(for: sequence)
+                            DiagnosisDestination(sequence: sequence, side: kickingSide)
                         } label: {
                             Label("診断を見る", systemImage: "stethoscope")
                                 .frame(maxWidth: .infinity)
@@ -157,23 +166,6 @@ struct ContentView: View {
                     ShareSheet(items: [url])
                 }
             }
-        }
-    }
-
-    /// 診断を実行して画面を返す。失敗した理由を隠さず表示する。
-    @ViewBuilder
-    private func diagnosisDestination(for sequence: PoseSequence) -> some View {
-        let outcome = Result { try DiagnosisEngine.diagnose(sequence, side: kickingSide) }
-
-        switch outcome {
-        case .success(let diagnosis):
-            DiagnosisView(diagnosis: diagnosis, sequence: sequence)
-        case .failure(let error):
-            ContentUnavailableView(
-                "診断できませんでした",
-                systemImage: "exclamationmark.triangle",
-                description: Text(error.localizedDescription)
-            )
         }
     }
 

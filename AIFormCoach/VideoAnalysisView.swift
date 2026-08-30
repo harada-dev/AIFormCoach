@@ -63,7 +63,10 @@ struct VideoAnalysisView: View {
                         }
                     }
                 }
-                .alert("エラー", isPresented: .constant(errorMessage != nil)) {
+                .alert("エラー", isPresented: Binding(
+                    get: { errorMessage != nil },
+                    set: { if !$0 { errorMessage = nil } }
+                )) {
                     Button("OK") { errorMessage = nil }
                 } message: {
                     Text(errorMessage ?? "")
@@ -193,7 +196,7 @@ struct VideoAnalysisView: View {
                 SkeletonPlayer(sequence: result.sequence)
 
                 NavigationLink {
-                    diagnosisDestination(for: result.sequence)
+                    DiagnosisDestination(sequence: result.sequence, side: kickingSide)
                 } label: {
                     Label("診断を見る", systemImage: "stethoscope")
                         .frame(maxWidth: .infinity)
@@ -232,22 +235,6 @@ struct VideoAnalysisView: View {
         }
     }
 
-    /// 診断を実行して画面を返す。失敗した理由を隠さず表示する。
-    @ViewBuilder
-    private func diagnosisDestination(for sequence: PoseSequence) -> some View {
-        let outcome = Result { try DiagnosisEngine.diagnose(sequence, side: kickingSide) }
-
-        switch outcome {
-        case .success(let diagnosis):
-            DiagnosisView(diagnosis: diagnosis, sequence: sequence)
-        case .failure(let error):
-            ContentUnavailableView(
-                "診断できませんでした",
-                systemImage: "exclamationmark.triangle",
-                description: Text(error.localizedDescription)
-            )
-        }
-    }
 
     /// 解析の妥当性を判断するための数値。ここを見て撮影方法を決める。
     private func diagnostics(_ r: VideoAnalysisResult) -> some View {

@@ -1,12 +1,24 @@
 import SwiftUI
 
 /// 保存した骨格の一覧。お気に入りと直近の記録を分けて表示する。
+///
+/// **固まる不具合の修正について**
+/// 旧実装は `.alert(isPresented: .constant(errorMessage != nil))` のように
+/// `.constant` バインディングでアラートを提示していた。`.constant` は値を
+/// 書き換えられないため、SwiftUI がアラートを閉じようとしても false にできず、
+/// 見えないアラートが提示され続けて画面のタッチを吸収していた。
+/// さらに同一ビューに `.alert` を2つ重ねており、シートの二重提示と同じ衝突も起きていた。
+///
+/// 対策:
+/// - バインディングを get/set の両方を持つ形にし、閉じるときに状態を消す
+/// - 2つのアラートを別のビュー階層に分けて付ける
 struct SkeletonLibraryView: View {
 
     @ObservedObject private var library = SkeletonLibrary.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var labelTarget: SkeletonLibrary.Entry?
+    @State private var isEditingLabel = false
     @State private var labelText = ""
     @State private var errorMessage: String?
     @State private var shareURL: URL?
@@ -16,6 +28,14 @@ struct SkeletonLibraryView: View {
             List {
                 favoritesSection
                 recentsSection
+            }
+            // 一言メモの入力はリスト側に付ける（エラー用と別階層にする）
+            .alert("一言メモ", isPresented: $isEditingLabel) {
+                TextField("例：自分のベスト／コーチのお手本", text: $labelText)
+                Button("保存") { commitLabel() }
+                Button("キャンセル", role: .cancel) { labelTarget = nil }
+            } message: {
+                Text("あとで見つけやすいように名前を付けられます。")
             }
             .navigationTitle("保存した記録")
             .navigationBarTitleDisplayMode(.inline)
@@ -33,22 +53,24 @@ struct SkeletonLibraryView: View {
                     )
                 }
             }
-            .alert("エラー", isPresented: .constant(errorMessage != nil)) {
-                Button("OK") { errorMessage = nil }
-            } message: {
-                Text(errorMessage ?? "")
-            }
-            .alert("一言メモ", isPresented: .constant(labelTarget != nil)) {
-                TextField("例：自分のベスト／コーチのお手本", text: $labelText)
-                Button("保存") { commitLabel() }
-                Button("キャンセル", role: .cancel) { labelTarget = nil }
-            } message: {
-                Text("あとで見つけやすいように名前を付けられます。")
-            }
             .sheet(item: $shareURL) { url in
                 ShareSheet(items: [url])
             }
         }
+        // エラーはナビゲーション側に付ける
+        .alert("エラー", isPresented: errorBinding) {
+            Button("OK") { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    /// 閉じたときに状態を消せるバインディング。`.constant` を使ってはならない。
+    private var errorBinding: Binding<Bool> {
+        Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )
     }
 
     // MARK: - お気に入り
@@ -102,10 +124,6 @@ struct SkeletonLibraryView: View {
                 Text("\(library.recents.count) / \(SkeletonLibrary.maxRecents)")
                     .monospacedDigit()
             }
-        } footer: {
-            if !library.recents.isEmpty {
-                Text("\(SkeletonLibrary.maxRecents)本を超えると古いものから消えます。残したいものはお気に入りに登録してください。")
-            }
         }
     }
 
@@ -153,6 +171,7 @@ struct SkeletonLibraryView: View {
         }
         labelText = entry.label ?? ""
         labelTarget = entry
+        isEditingLabel = true
     }
 
     private func commitLabel() {
@@ -199,7 +218,7 @@ struct SkeletonDetailView: View {
                     SkeletonPlayer(sequence: sequence)
 
                     NavigationLink {
-                        diagnosisDestination(for: sequence)
+                        DiagnosisDestination(sequence: sequence, side: kickingSide)
                     } label: {
                         Label("診断を見る", systemImage: "stethoscope")
                             .frame(maxWidth: .infinity)
@@ -226,7 +245,13 @@ struct SkeletonDetailView: View {
             }
         }
         .task { loadSequence() }
-        .alert("読み込めませんでした", isPresented: .constant(errorMessage != nil)) {
+        .alert(
+            "読み込めませんでした",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            )
+        ) {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
@@ -237,13 +262,9 @@ struct SkeletonDetailView: View {
         VStack(spacing: 0) {
             metaRow("出自", entry.source.displayName)
             Divider()
-            metaRow("フレーム数", "\(entry.frameCount)")
-            Divider()
             metaRow("フレームレート", String(format: "%.0f fps", entry.fps))
             Divider()
             metaRow("長さ", String(format: "%.2f 秒", Double(entry.durationMs) / 1000))
-            Divider()
-            metaRow("角度定義", "v\(entry.angleDefinitionVersion)")
         }
         .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal)
@@ -262,22 +283,6 @@ struct SkeletonDetailView: View {
         .padding(.vertical, 9)
     }
 
-    @ViewBuilder
-    private func diagnosisDestination(for sequence: PoseSequence) -> some View {
-        let outcome = Result { try DiagnosisEngine.diagnose(sequence, side: kickingSide) }
-
-        switch outcome {
-        case .success(let diagnosis):
-            DiagnosisView(diagnosis: diagnosis, sequence: sequence)
-        case .failure(let error):
-            ContentUnavailableView(
-                "診断できませんでした",
-                systemImage: "exclamationmark.triangle",
-                description: Text(error.localizedDescription)
-            )
-        }
-    }
-
     private func loadSequence() {
         guard sequence == nil else { return }
         do {
@@ -285,5 +290,38 @@ struct SkeletonDetailView: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+// MARK: - 診断への遷移
+
+/// 診断の実行と失敗表示をまとめたビュー。
+/// 各画面で同じ処理を書かないよう、ここに集約する。
+struct DiagnosisDestination: View {
+    let sequence: PoseSequence
+    let side: JointAngles.Side
+
+    var body: some View {
+        switch Result(catching: { try DiagnosisEngine.diagnose(sequence, side: side) }) {
+        case .success(let diagnosis):
+            DiagnosisView(diagnosis: diagnosis)
+        case .failure(let error):
+            ScrollView {
+                ContentUnavailableView {
+                    Label("うまく測れませんでした", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error.localizedDescription)
+                        .multilineTextAlignment(.leading)
+                }
+            }
+            .navigationTitle("今日の診断")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+private extension Result where Failure == Error {
+    init(catching body: () throws -> Success) {
+        do { self = .success(try body()) } catch { self = .failure(error) }
     }
 }
