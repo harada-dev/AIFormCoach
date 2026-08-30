@@ -25,16 +25,22 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
+            // プレビューは取り外さず、常に階層に置いたままにする。
+            //
+            // AVCaptureVideoPreviewLayer をセッション稼働中にビュー階層から
+            // 破棄すると、セッションからの切り離しが完了するまでメインスレッドが
+            // ブロックされる。シートを開くたびに数秒固まる原因になっていた。
+            CameraPreview(session: model.camera.session)
+                .ignoresSafeArea()
+            
+            SkeletonOverlay(frame: model.latestFrame)
+                .ignoresSafeArea()
+            
+            // 停止中は黒で覆う。カメラ自体は suspend() で止めているため、
+            // シートの裏で姿勢トリガーが働くことはない。
             if model.isSuspended {
                 Color.black.ignoresSafeArea()
-            } else {
-                CameraPreview(session: model.camera.session)
-                    .ignoresSafeArea()
-
-                SkeletonOverlay(frame: model.latestFrame)
-                    .ignoresSafeArea()
             }
-
             // 収録中は画面の縁を赤く光らせる。数メートル離れても分かる。
             if model.isRecording {
                 RecordingBorder()
