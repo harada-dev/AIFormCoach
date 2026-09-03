@@ -66,7 +66,7 @@ struct ComparisonView: View {
                     Spacer()
                 }
                 Spacer()
-                Text(Int(relativeMs) == 0 ? "バックスイング最深" : " ")
+                Text(Int(relativeMs) == 0 ? "ボール通過" : " ")
                     .font(.caption.bold())
                     .foregroundStyle(.white.opacity(0.8))
                     .padding(.bottom, 8)
@@ -137,12 +137,12 @@ struct ComparisonView: View {
             HStack(spacing: 12) {
                 Button(isPlaying ? "一時停止" : "再生") { isPlaying.toggle() }
                     .buttonStyle(.bordered)
-                Button("最深に戻す") { relativeMs = 0; isPlaying = false }
+                Button("ボール通過に戻す") { relativeMs = 0; isPlaying = false }
                     .buttonStyle(.bordered)
                 Spacer()
             }
 
-            Text("バックスイング最深を 0ms として、2本の時間軸を揃えています。")
+            Text("ボールに当たる瞬間を 0ms として、2本の時間軸を揃えています。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)

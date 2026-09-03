@@ -11,8 +11,9 @@ import CoreGraphics
 ///
 /// **揃えるもの**
 /// - 体格:大腿+下腿の長さを1として正規化。体格差を消してフォームだけを比べる
-/// - 時間軸:膝最深のフレームを0msとして前後を揃える。先頭を揃えると
-///   助走の長さの違いでずれる
+/// - 時間軸:`KickSegment`でクリップ内のキック区間を特定し、ボール通過
+///   (検出できなければ区間内の膝最深)を0msとして前後を揃える。
+///   クリップ全域から膝最深を探すと、歩行中の深い膝屈曲を誤検出することがある
 /// - 向き:前方向の符号が違う場合はx座標を反転。左向きと右向きを揃える
 enum PoseComparison {
 
@@ -33,7 +34,7 @@ enum PoseComparison {
     struct Track: Sendable {
         let label: String
         let side: JointAngles.Side
-        /// 膝最深のフレーム番号。時間軸の原点。
+        /// 時間軸の原点。ボール通過(なければキック区間内の膝最深)のフレーム番号。
         let originIndex: Int
         /// 正規化に使った脚の長さ(m)。実寸の参考にもなる。
         let legLength: Double
@@ -45,7 +46,7 @@ enum PoseComparison {
         fileprivate let frames: [PoseFrame]
         fileprivate let times: [Int]
 
-        /// 膝最深を0msとしたときの利用可能な時間範囲。
+        /// 原点(originIndex)を0msとしたときの利用可能な時間範囲。
         var relativeRange: ClosedRange<Int> {
             guard let first = times.first, let last = times.last else { return 0...0 }
             let origin = times[originIndex]
@@ -136,8 +137,9 @@ enum PoseComparison {
         // 体格を揃える。お手本を自分の脚長にスケールし直す。
         // 正規化は既に脚長=1で行っているため、描画時は同一スケールになる。
 
-        let lower = max(mineTrack.relativeRange.lowerBound, modelTrack.relativeRange.lowerBound)
-        let upper = min(mineTrack.relativeRange.upperBound, modelTrack.relativeRange.upperBound)
+        // キックの前後だけに絞る。クリップ全体を動かせても使いづらい。
+        let lower = max(mineTrack.relativeRange.lowerBound, modelTrack.relativeRange.lowerBound, -600)
+        let upper = min(mineTrack.relativeRange.upperBound, modelTrack.relativeRange.upperBound, 400)
         let shared = lower <= upper ? lower...upper : 0...0
 
         var cautions: [String] = []
@@ -172,7 +174,15 @@ enum PoseComparison {
         // 破綻フレームを補間してから比較する。
         let repaired = PoseIntegrity.repair(sequence).repaired
 
-        guard let origin = JointAngles.deepestFlexionIndex(in: repaired, side: side) else {
+        // キック区間を特定し、その中から基準点を決める。
+        // 全域から膝最深を探す方式は、実測5本のうち3本で歩行など
+        // 別の動作を拾っていた(最大2.2秒のずれ)。
+        let origin: Int
+        if let segment = KickSegment.detect(in: repaired, side: side) {
+            origin = segment.anchorIndex
+        } else if let fallback = JointAngles.deepestFlexionIndex(in: repaired, side: side) {
+            origin = fallback
+        } else {
             throw ComparisonError.cannotAlign(label)
         }
         guard let legLength = legLength(of: repaired, side: side) else {
