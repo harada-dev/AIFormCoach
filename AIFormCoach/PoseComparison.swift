@@ -42,6 +42,8 @@ enum PoseComparison {
         let mirrored: Bool
         /// 診断結果。指標の差分に使う。取得できなければ nil。
         let diagnosis: DiagnosisEngine.Diagnosis?
+        /// 基準点が何だったか。
+        let anchorDescription: String
 
         fileprivate let frames: [PoseFrame]
         fileprivate let times: [Int]
@@ -100,6 +102,8 @@ enum PoseComparison {
         let sharedRange: ClosedRange<Int>
         /// 撮影条件が揃っていないなどの注意。
         let cautions: [String]
+        /// 時間軸を揃えた基準点の名前(「ボール通過」または「バックスイング最深」)。
+        let anchorDescription: String
     }
 
     enum ComparisonError: LocalizedError {
@@ -162,7 +166,8 @@ enum PoseComparison {
             model: modelTrack,
             diffs: makeDiffs(mine: mineTrack, model: modelTrack),
             sharedRange: shared,
-            cautions: cautions
+            cautions: cautions,
+            anchorDescription: mineTrack.anchorDescription
         )
     }
 
@@ -178,10 +183,13 @@ enum PoseComparison {
         // 全域から膝最深を探す方式は、実測5本のうち3本で歩行など
         // 別の動作を拾っていた(最大2.2秒のずれ)。
         let origin: Int
+        let anchorName: String
         if let segment = KickSegment.detect(in: repaired, side: side) {
             origin = segment.anchorIndex
+            anchorName = segment.anchorDescription
         } else if let fallback = JointAngles.deepestFlexionIndex(in: repaired, side: side) {
             origin = fallback
+            anchorName = "バックスイング最深"
         } else {
             throw ComparisonError.cannotAlign(label)
         }
@@ -196,6 +204,7 @@ enum PoseComparison {
             legLength: legLength,
             mirrored: false,
             diagnosis: try? DiagnosisEngine.diagnose(repaired, side: side),
+            anchorDescription: anchorName,
             frames: repaired.frames,
             times: repaired.frames.map(\.timestampMs)
         )
@@ -280,6 +289,7 @@ private extension PoseComparison.Track {
             legLength: legLength,
             mirrored: !mirrored,
             diagnosis: diagnosis,
+            anchorDescription: anchorDescription,
             frames: frames,
             times: times
         )
