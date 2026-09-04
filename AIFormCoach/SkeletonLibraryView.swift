@@ -201,6 +201,7 @@ struct SkeletonDetailView: View {
     @State private var sequence: PoseSequence?
     @State private var kickingSide: JointAngles.Side = .right
     @State private var errorMessage: String?
+    @State private var showingComparison = false
 
     var body: some View {
         ScrollView {
@@ -224,6 +225,16 @@ struct SkeletonDetailView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .padding(.horizontal)
+
+                    Button {
+                        showingComparison = true
+                    } label: {
+                        Label("お手本とくらべる", systemImage: "person.2.wave.2")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
                     .controlSize(.large)
                     .padding(.horizontal)
                 } else if errorMessage == nil {
@@ -255,6 +266,11 @@ struct SkeletonDetailView: View {
             Button("OK") { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
+        }
+        .sheet(isPresented: $showingComparison) {
+            if let sequence {
+                ComparisonStarterView(mine: sequence, mineSide: kickingSide, mineLabel: "自分")
+            }
         }
     }
 
