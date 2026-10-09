@@ -29,6 +29,13 @@ enum PoseIntegrity {
     /// この割合を下回ると、計測値は出すが処方は控える。
     static let reliablePrescriptionRatio = 0.25
 
+    /// 計測窓内の補間率(1 − 健全率)がこの値を超えたら、画面に注記を出す。
+    /// **暫定値。**実測データが無いため、まず窓内補間率の分布(診断ログに出力)を
+    /// 見てから決める。クリップ全体の破綻率ではなく窓内で判定するのは、助走や
+    /// 着地の破綻は膝の値に影響しない一方、窓が補間で埋まっていれば表示値そのものが
+    /// 補間値になるため。
+    static let windowInterpolationNoteRatio = 0.30
+
     /// 一貫性を確認する骨。長さが安定している部位のみを使う
     /// （足部は変動係数16〜29%のため対象外）。
     private static let bones: [(PoseJoint, PoseJoint)] = [

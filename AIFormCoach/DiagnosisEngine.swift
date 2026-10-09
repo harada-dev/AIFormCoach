@@ -53,7 +53,17 @@ enum DiagnosisEngine {
         let brokenRatio: Double
         /// 計測窓内で元データが健全だった割合。
         let windowHealthyRatio: Double
+        /// 骨格が取れたフレームの割合(未検出フレームを除く)。画面に常時出す品質の数字はこれ1つ。
+        let detectionRate: Double
         let warnings: [String]
+
+        /// 計測窓の補間率。表示している膝角そのものがどれだけ補間値かを表す。
+        var windowInterpolatedRatio: Double { 1 - windowHealthyRatio }
+
+        /// 窓内の補間率が高く、数値を参考値として扱うべきか。
+        var isWindowUnstable: Bool {
+            windowInterpolatedRatio > PoseIntegrity.windowInterpolationNoteRatio
+        }
 
         var canPrescribe: Bool {
             hasWorldCoordinates
@@ -146,7 +156,7 @@ enum DiagnosisEngine {
 
         // 計測窓内に信用できるフレームが足りなければ診断しない。
         let windowHealthy = integrity.healthyRatio(around: backswing, windowMs: 150)
-        print("診断: \(sequence.recordedAt) / 破綻率 \(Int(integrity.brokenRatio * 100))% / 窓内健全 \(Int(windowHealthy * 100))%")
+        print("診断: \(sequence.recordedAt) / 破綻率 \(Int(integrity.brokenRatio * 100))% / 窓内補間率 \(Int((1 - windowHealthy) * 100))% / 検出率 \(Int(detectionRate(of: sequence) * 100))%")
         guard windowHealthy >= PoseIntegrity.minimumWindowHealthyRatio else {
             throw DiagnosisError.unreliableMeasurement(
                 brokenRatio: integrity.brokenRatio,
@@ -317,8 +327,12 @@ enum DiagnosisEngine {
     ) -> Quality {
         var warnings: [String] = []
 
-        if integrity.brokenRatio > 0.1 {
-            warnings.append("骨格の推定が不安定な区間が\(Int(integrity.brokenRatio * 100))%ありました。前後のフレームから補間して計測しています。")
+        // クリップ全体ではなく測定窓(膝最深の前後150ms)で判定する。
+        // 助走や着地の破綻は膝の値に影響しない。窓が補間で埋まっているときだけ注記する。
+        let windowHealthy = integrity.healthyRatio(around: backswing, windowMs: 150)
+        let detectionRate = Self.detectionRate(of: sequence)
+        if 1 - windowHealthy > PoseIntegrity.windowInterpolationNoteRatio {
+            warnings.append("膝が最も曲がった前後の骨格推定が不安定で、\(Int((1 - windowHealthy) * 100))%を前後のフレームから補間しています。数値は参考値です。")
         }
 
         let hasWorld = sequence.worldCoverage > 0.9
@@ -355,9 +369,20 @@ enum DiagnosisEngine {
             footShankRatio: ratio,
             isSideView: isSideView,
             brokenRatio: integrity.brokenRatio,
-            windowHealthyRatio: integrity.healthyRatio(around: backswing, windowMs: 150),
+            windowHealthyRatio: windowHealthy,
+            detectionRate: detectionRate,
             warnings: warnings
         )
+    }
+
+    /// 骨格が取れたフレームの割合。未検出フレームは全関節の visibility が 0 で保存されている。
+    private static func detectionRate(of sequence: PoseSequence) -> Double {
+        let frames = sequence.frames
+        guard !frames.isEmpty else { return 0 }
+        let detected = frames.filter { frame in
+            frame.keypoints.contains { $0.visibility > 0 }
+        }.count
+        return Double(detected) / Double(frames.count)
     }
 
     /// 足長÷下腿長の中央値。解剖学的にはほぼ一定であるべき指標なので、
