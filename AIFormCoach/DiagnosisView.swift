@@ -225,9 +225,8 @@ struct DiagnosisView: View {
 
             HStack(spacing: 8) {
                 chip("\(Int(diagnosis.quality.fps))", "fps")
-                chip(String(format: "%.2f", diagnosis.quality.confidence), "信頼度")
                 chip(diagnosis.quality.isSideView ? "○" : "✕", "真横")
-                chip("\(Int(diagnosis.quality.windowHealthyRatio * 100))%", "健全")
+                chip("\(Int(diagnosis.quality.detectionRate * 100))%", "検出率")
             }
 
             ForEach(diagnosis.quality.warnings, id: \.self) { warning in
