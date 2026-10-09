@@ -18,6 +18,9 @@ struct ComparisonView: View {
     @State private var offsetMs: Double = 0
     @State private var isPlaying = false
     @State private var mode: Mode = .sideBySide
+    /// 重ねるモードの表示角度。並べるモードには適用しない。
+    /// モード切替をまたいで保持しない(毎回真横から始まる)。
+    @State private var viewAngle: PoseViewAngle = .side
 
     private enum Mode: String, CaseIterable {
         case sideBySide = "並べる"
@@ -34,6 +37,9 @@ struct ComparisonView: View {
                     ForEach(Mode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                .onChange(of: mode) { _, new in
+                    if new == .overlay { viewAngle = .side }
+                }
 
                 switch mode {
                 case .sideBySide: sideBySideView
@@ -104,7 +110,24 @@ struct ComparisonView: View {
     // MARK: - 重ね合わせ
 
     private var overlayView: some View {
-        VStack(spacing: 6) {
+        // 蹴り足が違う場合、または撮影側が違う場合(排他的論理和)、お手本側を反転する。
+        let mirrorBest = PoseViewTransform.shouldMirror(
+            selfKickFootIsRight: result.mine.side == .right,
+            otherKickFootIsRight: result.model.side == .right,
+            selfOrientation: result.mine.orientation,
+            otherOrientation: result.model.orientation
+        )
+        let myTransform = PoseViewTransform(
+            orientation: result.mine.orientation,
+            viewAngle: viewAngle
+        )
+        let bestTransform = PoseViewTransform(
+            orientation: result.model.orientation,
+            viewAngle: viewAngle,
+            mirrorToMatch: mirrorBest
+        )
+
+        return VStack(spacing: 6) {
             HStack(spacing: 14) {
                 legendChip(result.mine.label, mineColor)
                 legendChip(result.model.label, modelColor)
@@ -116,12 +139,12 @@ struct ComparisonView: View {
                     let scale = size.height / 2.6
                     let center = CGPoint(x: size.width / 2, y: size.height / 2)
 
-                    if let pose = result.model.pose(atRelativeMs: Int(relativeMs + offsetMs)) {
+                    if let pose = result.model.pose(atRelativeMs: Int(relativeMs + offsetMs), transform: bestTransform) {
                         draw(pose, in: &context, center: center, scale: scale,
                              color: modelColor, lineWidth: 8, opacity: 0.5,
                              side: result.model.side)
                     }
-                    if let pose = result.mine.pose(atRelativeMs: Int(relativeMs)) {
+                    if let pose = result.mine.pose(atRelativeMs: Int(relativeMs), transform: myTransform) {
                         draw(pose, in: &context, center: center, scale: scale,
                              color: mineColor, lineWidth: 5, opacity: 1,
                              side: result.mine.side)
@@ -137,8 +160,21 @@ struct ComparisonView: View {
                         .padding(.bottom, 8)
                 }
             }
+            .frame(height: 320)
+
+            Picker("表示角度", selection: $viewAngle) {
+                ForEach(PoseViewAngle.allCases, id: \.self) { angle in
+                    Text(angle.label).tag(angle)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if viewAngle != .side {
+                Text("奥行き方向は推定値です")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
         }
-        .frame(height: 320)
     }
 
     private func legendChip(_ label: String, _ color: Color) -> some View {
@@ -165,15 +201,25 @@ struct ComparisonView: View {
             return CGPoint(x: center.x + p.x * scale, y: center.y + p.y * scale)
         }
 
+        // 表示角度の変換を通したポーズ(重ねるモード)だけ奥行きの線幅を付ける。
+        // 並べるモードのポーズは depthZ が空なので従来どおり一定の太さになる。
+        let depthRange = pose.depthZ.isEmpty ? nil : PoseDepthCue.depthRange(ofZ: pose.depthZ)
+
         for (a, b) in PoseJoint.bones {
             guard pose.isVisible(a), pose.isVisible(b) else { continue }
             var path = Path()
             path.move(to: screen(a))
             path.addLine(to: screen(b))
+
+            var width = lineWidth
+            if let depthRange, let za = pose.depth(a), let zb = pose.depth(b) {
+                width = lineWidth * PoseDepthCue.widthScale(z: (za + zb) / 2, in: depthRange)
+            }
+
             context.stroke(
                 path,
                 with: .color(color.opacity(opacity)),
-                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                style: StrokeStyle(lineWidth: width, lineCap: .round)
             )
         }
 

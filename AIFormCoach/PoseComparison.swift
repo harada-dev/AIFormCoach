@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import simd
 
 /// 2つの骨格を重ねて比較するためのモデル。
 ///
@@ -23,10 +24,16 @@ enum PoseComparison {
     struct NormalizedPose: Sendable {
         /// 33要素。単位は「大腿+下腿の長さ = 1」。
         var points: [CGPoint]
+        /// 表示角度変換後の奥行き(z)。線幅による奥行き表現に使う。
+        /// 「並べる」モードでは変換を通さないため空のまま(depth cueは付かない)。
+        var depthZ: [Float] = []
         var visibility: [Float]
 
         subscript(joint: PoseJoint) -> CGPoint { points[joint.rawValue] }
         func isVisible(_ joint: PoseJoint) -> Bool { visibility[joint.rawValue] >= 0.4 }
+        func depth(_ joint: PoseJoint) -> Float? {
+            depthZ.count == points.count ? depthZ[joint.rawValue] : nil
+        }
     }
 
     // MARK: - 1本のクリップ
@@ -44,9 +51,14 @@ enum PoseComparison {
         let diagnosis: DiagnosisEngine.Diagnosis?
         /// 基準点が何だったか。
         let anchorDescription: String
+        /// 向き正規化の結果(補正量・撮影側・信頼性)。
+        /// クリップごとに1回だけ計算する(重ね表示の視点切り替え専用。並べるモードでは使わない)。
+        let orientation: PoseOrientationResult
 
         fileprivate let frames: [PoseFrame]
         fileprivate let times: [Int]
+        /// 骨長正規化・向き(mirrored)反映済みの3D座標。視点切り替えの変換元。
+        fileprivate let normalizedWorldFrames: [[SIMD3<Float>]]
 
         /// 原点(originIndex)を0msとしたときの利用可能な時間範囲。
         var relativeRange: ClosedRange<Int> {
@@ -55,18 +67,35 @@ enum PoseComparison {
             return (first - origin)...(last - origin)
         }
 
-        /// 指定した相対時刻に最も近いフレームの正規化姿勢。
-        func pose(atRelativeMs ms: Int) -> NormalizedPose? {
-            guard !frames.isEmpty else { return nil }
+        private func nearestFrameIndex(forRelativeMs ms: Int) -> Int? {
+            guard !times.isEmpty else { return nil }
             let target = times[originIndex] + ms
-
             var best = 0
             var bestDistance = Int.max
             for i in times.indices {
                 let d = abs(times[i] - target)
                 if d < bestDistance { bestDistance = d; best = i }
             }
+            return best
+        }
+
+        /// 指定した相対時刻に最も近いフレームの正規化姿勢(「並べる」モード用、既存の投影のまま)。
+        func pose(atRelativeMs ms: Int) -> NormalizedPose? {
+            guard let best = nearestFrameIndex(forRelativeMs: ms) else { return nil }
             return normalize(frames[best], legLength: legLength, mirrored: mirrored)
+        }
+
+        /// 表示角度の変換を適用した正規化姿勢(「重ねる」モードの視点切り替え専用)。
+        func pose(atRelativeMs ms: Int, transform: PoseViewTransform) -> NormalizedPose? {
+            guard let best = nearestFrameIndex(forRelativeMs: ms) else { return nil }
+            let raw = normalizedWorldFrames[best]
+            guard !raw.isEmpty else { return nil }
+            let transformed = transform.apply(frame: raw)
+            return NormalizedPose(
+                points: transformed.map { CGPoint(x: CGFloat($0.x), y: CGFloat($0.y)) },
+                depthZ: transformed.map(\.z),
+                visibility: frames[best].keypoints.map(\.visibility)
+            )
         }
 
         /// 膝屈曲角の時系列(相対時刻付き)。グラフ表示に使える。
@@ -197,6 +226,11 @@ enum PoseComparison {
             throw ComparisonError.cannotAlign(label)
         }
 
+        let normalizedFrames = buildNormalizedWorldFrames(
+            repaired.frames, legLength: legLength, mirrored: false
+        )
+        let orientation = PoseOrientation.resolve(frames: normalizedFrames, referenceIndex: origin)
+
         return Track(
             label: label,
             side: side,
@@ -205,9 +239,30 @@ enum PoseComparison {
             mirrored: false,
             diagnosis: try? DiagnosisEngine.diagnose(repaired, side: side),
             anchorDescription: anchorName,
+            orientation: orientation,
             frames: repaired.frames,
-            times: repaired.frames.map(\.timestampMs)
+            times: repaired.frames.map(\.timestampMs),
+            normalizedWorldFrames: normalizedFrames
         )
+    }
+
+    /// worldLandmarksを脚長で正規化し(mirroredならx反転)、3Dのまま保持する。
+    /// 視点切り替え(重ね表示)の変換元。既存の`normalize`は2D投影まで行うが、
+    /// こちらはz(奥行き)を残す点が異なる。
+    fileprivate static func buildNormalizedWorldFrames(
+        _ frames: [PoseFrame], legLength: Double, mirrored: Bool
+    ) -> [[SIMD3<Float>]] {
+        let sign: Float = mirrored ? -1 : 1
+        return frames.map { frame in
+            guard frame.hasWorld else { return [] }
+            return frame.world.map { p in
+                SIMD3<Float>(
+                    sign * Float(Double(p.x) / legLength),
+                    Float(Double(p.y) / legLength),
+                    Float(Double(p.z) / legLength)
+                )
+            }
+        }
     }
 
     private static func makeDiffs(mine: Track, model: Track) -> [MetricDiff] {
@@ -282,7 +337,14 @@ enum PoseComparison {
 
 private extension PoseComparison.Track {
     func mirroring() -> Self {
-        PoseComparison.Track(
+        // mirrored の反転でx符号が変わるため、そこから決まるorientationも
+        // 併せて作り直す(古い値を使い回すと視点切り替えの向きがずれる)。
+        let flippedFrames = PoseComparison.buildNormalizedWorldFrames(
+            frames, legLength: legLength, mirrored: !mirrored
+        )
+        let orientation = PoseOrientation.resolve(frames: flippedFrames, referenceIndex: originIndex)
+
+        return PoseComparison.Track(
             label: label,
             side: side,
             originIndex: originIndex,
@@ -290,8 +352,10 @@ private extension PoseComparison.Track {
             mirrored: !mirrored,
             diagnosis: diagnosis,
             anchorDescription: anchorDescription,
+            orientation: orientation,
             frames: frames,
-            times: times
+            times: times,
+            normalizedWorldFrames: flippedFrames
         )
     }
 }
